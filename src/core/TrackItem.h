@@ -2,6 +2,7 @@
 #define TRACKITEM_H
 
 #include <QString>
+#include <QImage>
 #include <QPixmap>
 #include <QFileInfo>
 #include <QPainter>
@@ -19,7 +20,7 @@ struct TrackMetadata {
     qint64 duration;
     int bitrate;
     int sampleRate;
-    QPixmap coverArt;
+    QImage coverArt;   // QImage is thread-safe; convert to QPixmap only in UI
     QString filePath;
     qint64  cueStartMs  = -1;
     qint64  cueEndMs    = -1;
@@ -27,6 +28,11 @@ struct TrackMetadata {
     QString cueFilePath;
 
     TrackMetadata() : trackNumber(0), duration(0), bitrate(0), sampleRate(0) {}
+
+    // Convenience: get cover as QPixmap for display (call only from main thread)
+    QPixmap coverPixmap() const {
+        return coverArt.isNull() ? QPixmap() : QPixmap::fromImage(coverArt);
+    }
 };
 
 class TrackItem
@@ -42,10 +48,10 @@ public:
 
     void loadFullMetadata(const QMediaMetaData &metaData);
 
-    static TrackItem *fromCueTrack(const CueTrack &ct, const QPixmap &sharedCover = {});
-    static QPixmap    coverArtFromFile(const QString &filePath);
+    static TrackItem *fromCueTrack(const CueTrack &ct, const QImage &sharedCover = {});
+    static QImage     coverArtFromFile(const QString &filePath);
 
-    static QPixmap extractCoverArt(const QString &filePath);
+    static QImage extractCoverArt(const QString &filePath);
     static QString formatDuration(qint64 milliseconds);
     static void readFlacFileInfo(const QString &filePath, int &sampleRate, QString &year,
                                  qint64 &durationMs);

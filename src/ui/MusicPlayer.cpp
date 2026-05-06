@@ -323,9 +323,9 @@ void MusicPlayer::setupUI()
     m_playlistList = new QListWidget();
     m_playlistList->setStyleSheet(
         "QListWidget { background: #2b2b2b; border: none; color: white; font-size: 13px; outline: none; }"
-        "QListWidget::item { padding: 8px 8px; border-radius: 4px; background: transparent; }"
-        "QListWidget::item:selected { background: transparent; color: white; font-weight: bold; }"
-        "QListWidget::item:hover { background: #3a3a3a; }");
+        "QListWidget::item { padding: 8px 8px 8px 12px; border-radius: 4px; background: transparent; border-left: 3px solid transparent; }"
+        "QListWidget::item:selected { background: #3d3d3d; color: #1db954; font-weight: bold; border-left: 3px solid #1db954; }"
+        "QListWidget::item:hover:!selected { background: #3a3a3a; }");
     m_playlistList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_playlistList->setDragDropMode(QAbstractItemView::NoDragDrop);
     m_playlistList->setAcceptDrops(true);
@@ -1111,6 +1111,9 @@ void MusicPlayer::onBackgroundMetadataLoaded(const QString &filePath)
         TrackItem *track = m_tracks[trackIndex];
         if (track && normalizePathForCompare(track->filePath()) == needle) {
             updateTrackRow(trackIndex);
+            // Also update bottom bar if this is the currently selected/playing track
+            if (trackIndex == m_currentIndex)
+                updateBottomBarFromTrack(track);
         }
     }
 }
@@ -1227,7 +1230,7 @@ void MusicPlayer::onPlaylistSelected(int row)
     m_tracks.reserve(cachedPaths.size());
     {
         QMap<QString, QList<CueTrack>> cueCache;
-        QMap<QString, QPixmap>         coverCache;
+        QMap<QString, QImage>          coverCache;
 
         for (const QString &path : cachedPaths) {
             if (isCueSavedPath(path)) {
@@ -1283,11 +1286,14 @@ void MusicPlayer::onPlaylistSelected(int row)
 
     if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()) {
         TrackItem *currentTrack = m_tracks[m_currentIndex];
-        if (currentTrack && !currentTrack->isMetadataLoaded())
-            currentTrack->ensureMetadataLoaded();
+        if (currentTrack && !currentTrack->isMetadataLoaded() && m_metadataThread)
+            m_metadataThread->queuePriorityRange({currentTrack});
     }
 
     refreshTable();
+
+    // Prioritize visible rows immediately after table is rendered.
+    QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
 
     // Start metadata warmup immediately on playlist enter (no scroll required).
     if (m_metadataThread && !m_tracks.isEmpty()) {
@@ -1781,7 +1787,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             QString artist;
             int     dur    = 0;
             if (track) {
-                cover  = track->metadata().coverArt;
+                cover  = track->metadata().coverPixmap();
                 title  = track->metadata().title.isEmpty()
                          ? QFileInfo(track->filePath()).baseName()
                          : track->metadata().title;
@@ -1985,6 +1991,7 @@ void MusicPlayer::onFilesDropped(const QStringList &files, int targetVisualRow)
 
     clearShuffleRuntimeState(false);
     refreshTable();
+    QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
     m_trackCountLabel->setText(QString("%1 tracks").arg(m_tracks.count()));
     saveCurrentPlaylistTracks();
     resyncPreparedNext();
@@ -2150,51 +2157,55 @@ void MusicPlayer::onPlaylistScroll(int value)
     if (!m_playlistTable || !m_metadataThread)
         return;
 
-    // Get visible rows range
-    const int firstVisible = m_playlistTable->rowAt(0);
-    const int lastVisible = m_playlistTable->rowAt(m_playlistTable->viewport()->height());
-
-    if (firstVisible < 0 || lastVisible < 0)
+    const int rowCount = m_playlistTable->rowCount();
+    if (rowCount == 0)
         return;
 
-    // Build list of tracks to load - prioritize first visible row
+    // Use rowAt for visible range; fall back to row height estimate if not yet rendered
+    int firstVisible = m_playlistTable->rowAt(0);
+    int lastVisible = m_playlistTable->rowAt(m_playlistTable->viewport()->height() - 1);
+
+    if (firstVisible < 0) {
+        // Table not yet rendered — estimate from row height
+        const int rowH = qMax(1, m_rowHeight);
+        const int viewH = qMax(1, m_playlistTable->viewport()->height());
+        firstVisible = 0;
+        lastVisible = qMin(rowCount - 1, viewH / rowH + 1);
+    } else if (lastVisible < 0) {
+        lastVisible = rowCount - 1;
+    }
+
     QList<TrackItem*> priority;
     QList<TrackItem*> nearby;
 
-    for (int row = firstVisible; row <= lastVisible && row < m_tracks.count(); ++row) {
+    // Visible rows — highest priority
+    for (int row = firstVisible; row <= lastVisible && row < rowCount; ++row) {
         int trackIdx = getTrackIndexFromVisualRow(row);
         if (trackIdx >= 0 && trackIdx < m_tracks.count()) {
             TrackItem *track = m_tracks[trackIdx];
-            if (track && !track->isMetadataLoaded()) {
-                if (row == firstVisible) {
-                    priority.append(track);
-                } else {
-                    nearby.append(track);
-                }
-            }
+            if (track && !track->isMetadataLoaded())
+                priority.append(track);
         }
     }
 
-    // Add nearby rows
-    for (int offset = 1; offset <= 10; ++offset) {
-        if (firstVisible - offset >= 0) {
-            int trackIdx = getTrackIndexFromVisualRow(firstVisible - offset);
+    // Rows just above and below visible area
+    for (int offset = 1; offset <= 20; ++offset) {
+        for (int row : {firstVisible - offset, lastVisible + offset}) {
+            if (row < 0 || row >= rowCount)
+                continue;
+            int trackIdx = getTrackIndexFromVisualRow(row);
             if (trackIdx >= 0 && trackIdx < m_tracks.count()) {
                 TrackItem *t = m_tracks[trackIdx];
-                if (t && !t->isMetadataLoaded() && !nearby.contains(t) && !priority.contains(t)) {
+                if (t && !t->isMetadataLoaded() && !nearby.contains(t) && !priority.contains(t))
                     nearby.append(t);
-                }
             }
         }
     }
 
-    // Queue visible rows as high-priority hints; full playlist preload runs in parallel.
-    if (!priority.isEmpty()) {
+    if (!priority.isEmpty())
         m_metadataThread->queuePriorityRange(priority);
-    }
-    if (!nearby.isEmpty()) {
+    if (!nearby.isEmpty())
         m_metadataThread->queuePriorityRange(nearby);
-    }
 }
 
 // ============= Row Reorder =============
@@ -2301,7 +2312,7 @@ void MusicPlayer::addCueFile(const QString &cuePath)
     if (cueTracks.isEmpty())
         return;
 
-    QMap<QString, QPixmap> coverCache;
+    QMap<QString, QImage> coverCache;
 
     for (const CueTrack &ct : cueTracks) {
         if (!QFileInfo::exists(ct.audioFilePath))
@@ -2387,7 +2398,7 @@ void MusicPlayer::refreshTable()
 
         QTableWidgetItem *coverItem = new QTableWidgetItem();
         if (!meta.coverArt.isNull())
-            coverItem->setData(Qt::DecorationRole, meta.coverArt);
+            coverItem->setData(Qt::DecorationRole, QPixmap::fromImage(meta.coverArt));
         coverItem->setData(Qt::UserRole, i);
         coverItem->setFlags(coverItem->flags() & ~Qt::ItemIsEditable);
         m_playlistTable->setItem(i, COL_COVER, coverItem);
@@ -2494,6 +2505,7 @@ void MusicPlayer::removeSelected()
     m_preparedNextPath.clear();
     clearShuffleRuntimeState(true);
     refreshTable();
+    QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
     m_trackCountLabel->setText(QString("%1 tracks").arg(m_tracks.count()));
     saveCurrentPlaylistTracks();
     resyncPreparedNext();
@@ -3293,7 +3305,7 @@ void MusicPlayer::updatePlaylistHighlight()
 
         QTableWidgetItem *coverItem = m_playlistTable->item(row, COL_COVER);
         if (coverItem && trackIndex >= 0 && trackIndex < m_tracks.count()) {
-            QPixmap base = m_tracks[trackIndex]->metadata().coverArt;
+            QPixmap base = m_tracks[trackIndex]->metadata().coverPixmap();
             if (base.isNull()) {
                 base = QPixmap(coverSize, coverSize);
                 base.fill(Qt::transparent);
@@ -3619,7 +3631,7 @@ void MusicPlayer::updateTrackRow(int trackIndex)
     const TrackMetadata &md = track->metadata();
 
     if (!md.coverArt.isNull())
-        m_playlistTable->item(visualRow, COL_COVER)->setData(Qt::DecorationRole, md.coverArt);
+        m_playlistTable->item(visualRow, COL_COVER)->setData(Qt::DecorationRole, QPixmap::fromImage(md.coverArt));
 
     m_playlistTable->item(visualRow, COL_TITLE)->setText(md.title);
     m_playlistTable->item(visualRow, COL_ARTIST)->setText(md.artist);
@@ -3655,11 +3667,12 @@ void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)
     m_titleLabel->setText(title);
     m_artistLabel->setText(md.artist);
 
-    if (!md.coverArt.isNull())
-        m_bottomCoverLabel->setPixmap(md.coverArt.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    const QPixmap cover = md.coverPixmap();
+    if (!cover.isNull())
+        m_bottomCoverLabel->setPixmap(cover.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
     if (m_fullscreenPlayer) {
-        m_fullscreenPlayer->updateTrack(md.coverArt, title, md.artist,
+        m_fullscreenPlayer->updateTrack(cover, title, md.artist,
                                         static_cast<int>(md.duration));
         m_fullscreenPlayer->updateShuffleState(m_shuffleEnabled, m_shuffleMode);
         m_fullscreenPlayer->updateRepeatState(m_repeatMode);
@@ -3692,7 +3705,7 @@ void MusicPlayer::openSettings()
 
             int trackIndex = getTrackIndexFromVisualRow(i);
             if (trackIndex >= 0 && trackIndex < m_tracks.count()) {
-                QPixmap cover = m_tracks[trackIndex]->metadata().coverArt;
+                QPixmap cover = m_tracks[trackIndex]->metadata().coverPixmap();
                 if (!cover.isNull()) {
                     m_playlistTable->item(i, COL_COVER)->setData(Qt::DecorationRole, cover);
                 }

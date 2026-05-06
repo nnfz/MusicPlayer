@@ -11,14 +11,14 @@
 #include <QtEndian>
 #include <QHash>
 #include <QBuffer>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QMutex>
 #include <QMutexLocker>
-#include <QSaveFile>
 #include <QStandardPaths>
+#include <QThread>
 #include <QtGlobal>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
 #include <cstdlib>
 #include <cstring>
 
@@ -32,9 +32,9 @@ extern "C" {
 
 namespace {
 
-QPixmap defaultCoverPixmap()
+QImage defaultCoverImage()
 {
-    QPixmap defaultCover(64, 64);
+    QImage defaultCover(64, 64, QImage::Format_ARGB32);
     defaultCover.fill(QColor(60, 60, 60));
 
     QPainter painter(&defaultCover);
@@ -46,30 +46,26 @@ QPixmap defaultCoverPixmap()
     return defaultCover;
 }
 
-bool isDefaultCoverPixmap(const QPixmap &pixmap)
+bool isDefaultCoverImage(const QImage &image)
 {
-    if (pixmap.isNull())
-        return false;
-
-    const QImage image = pixmap.toImage();
     if (image.isNull())
         return false;
 
-    static const QImage defaultImage = defaultCoverPixmap().toImage();
+    static const QImage defaultImage = defaultCoverImage();
     return image == defaultImage;
 }
 
-bool isSuspiciousCoverPixmap(const QPixmap &pixmap)
+bool isSuspiciousCoverImage(const QImage &image)
 {
-    if (pixmap.isNull())
-        return false;
-
-    const QImage image = pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
     if (image.isNull())
         return false;
 
-    const int width = image.width();
-    const int height = image.height();
+    const QImage converted = image.convertToFormat(QImage::Format_ARGB32);
+    if (converted.isNull())
+        return false;
+
+    const int width = converted.width();
+    const int height = converted.height();
     if (width <= 0 || height <= 0)
         return true;
 
@@ -82,7 +78,7 @@ bool isSuspiciousCoverPixmap(const QPixmap &pixmap)
 
     for (int y = 0; y < height; y += stepY) {
         for (int x = 0; x < width; x += stepX) {
-            const QRgb px = image.pixel(x, y);
+            const QRgb px = converted.pixel(x, y);
             const int alpha = qAlpha(px);
             const int red = qRed(px);
             const int green = qGreen(px);
@@ -102,7 +98,6 @@ bool isSuspiciousCoverPixmap(const QPixmap &pixmap)
     if (nonTransparent == 0)
         return true;
 
-    // Treat only near-uniform fully dark covers as suspicious to avoid false positives.
     const bool almostOpaque = nonTransparent >= (samples * 9) / 10;
     const bool almostAllBlack = nonBlack <= qMax(1, samples / 100);
     return almostOpaque && almostAllBlack;
@@ -142,16 +137,10 @@ bool coverLogMatchesFilter(const QString &filePath)
         || QFileInfo(filePath).fileName().contains(filter, Qt::CaseInsensitive);
 }
 
-QString describePixmapForLog(const QPixmap &pixmap)
+QString describeImageForLog(const QImage &image)
 {
-    if (pixmap.isNull())
-        return QStringLiteral("null");
-
-    const QImage image = pixmap.toImage();
     if (image.isNull())
-        return QStringLiteral("%1x%2 image=null")
-            .arg(pixmap.width())
-            .arg(pixmap.height());
+        return QStringLiteral("null");
 
     const int centerX = qBound(0, image.width() / 2, qMax(0, image.width() - 1));
     const int centerY = qBound(0, image.height() / 2, qMax(0, image.height() - 1));
@@ -182,135 +171,56 @@ struct TrackMetadataCacheEntry {
 
 QHash<QString, TrackMetadataCacheEntry> s_trackMetadataCache;
 constexpr int kTrackMetadataCacheMaxEntries = 4096;
-constexpr int kTrackMetadataDiskCacheVersion = 1;
-constexpr int kTrackMetadataDiskCacheMaxEntries = 1500;
-constexpr qint64 kTrackMetadataDiskFlushIntervalMs = 4000;
 QMutex s_trackMetadataCacheMutex;
 bool s_trackMetadataCacheLoaded = false;
-bool s_trackMetadataCacheDirty = false;
-qint64 s_trackMetadataCacheLastFlushMs = 0;
 
 QString normalizeTrackPathForCache(const QString &path);
 
-QString trackMetadataCacheFilePath()
+QString trackMetadataCacheDbPath()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (!dir.isEmpty())
         QDir().mkpath(dir);
-    return dir + QStringLiteral("/track_metadata_cache_v1.json");
+    return dir + QStringLiteral("/track_metadata_cache.db");
 }
 
-QJsonObject serializeTrackMetadataEntry(const TrackMetadataCacheEntry &entry)
+QSqlDatabase openCacheDb()
 {
-    QJsonObject obj;
-    obj[QStringLiteral("filePath")] = entry.metadata.filePath;
-    obj[QStringLiteral("fileSize")] = QString::number(entry.fileSize);
-    obj[QStringLiteral("lastModifiedMs")] = QString::number(entry.lastModifiedMs);
-    obj[QStringLiteral("title")] = entry.metadata.title;
-    obj[QStringLiteral("artist")] = entry.metadata.artist;
-    obj[QStringLiteral("album")] = entry.metadata.album;
-    obj[QStringLiteral("year")] = entry.metadata.year;
-    obj[QStringLiteral("genre")] = entry.metadata.genre;
-    obj[QStringLiteral("trackNumber")] = entry.metadata.trackNumber;
-    obj[QStringLiteral("duration")] = QString::number(entry.metadata.duration);
-    obj[QStringLiteral("bitrate")] = entry.metadata.bitrate;
-    obj[QStringLiteral("sampleRate")] = entry.metadata.sampleRate;
+    // Each thread needs its own connection
+    const QString connName = QStringLiteral("track_metadata_cache_%1")
+        .arg(reinterpret_cast<quintptr>(QThread::currentThreadId()));
 
-    if (!entry.metadata.coverArt.isNull() && !isDefaultCoverPixmap(entry.metadata.coverArt)) {
-        QByteArray coverBytes;
-        QBuffer coverBuffer(&coverBytes);
-        if (coverBuffer.open(QIODevice::WriteOnly)
-            && entry.metadata.coverArt.toImage().save(&coverBuffer, "PNG")
-            && coverBytes.size() <= (128 * 1024)) {
-            obj[QStringLiteral("coverPngBase64")] = QString::fromLatin1(coverBytes.toBase64());
-        }
+    if (QSqlDatabase::contains(connName))
+        return QSqlDatabase::database(connName);
+
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
+    db.setDatabaseName(trackMetadataCacheDbPath());
+    if (!db.open()) {
+        qWarning() << "[cache] Failed to open SQLite db:" << db.lastError().text();
+        return db;
     }
 
-    return obj;
-}
-
-bool deserializeTrackMetadataEntry(const QJsonObject &obj, TrackMetadataCacheEntry &entry)
-{
-    const QString filePath = obj.value(QStringLiteral("filePath")).toString();
-    if (filePath.isEmpty())
-        return false;
-
-    entry.metadata.filePath = filePath;
-    entry.fileSize = obj.value(QStringLiteral("fileSize")).toString().toLongLong();
-    entry.lastModifiedMs = obj.value(QStringLiteral("lastModifiedMs")).toString().toLongLong();
-    entry.metadata.title = obj.value(QStringLiteral("title")).toString();
-    entry.metadata.artist = obj.value(QStringLiteral("artist")).toString();
-    entry.metadata.album = obj.value(QStringLiteral("album")).toString();
-    entry.metadata.year = obj.value(QStringLiteral("year")).toString();
-    entry.metadata.genre = obj.value(QStringLiteral("genre")).toString();
-    entry.metadata.trackNumber = obj.value(QStringLiteral("trackNumber")).toInt();
-    entry.metadata.duration = obj.value(QStringLiteral("duration")).toString().toLongLong();
-    entry.metadata.bitrate = obj.value(QStringLiteral("bitrate")).toInt();
-    entry.metadata.sampleRate = obj.value(QStringLiteral("sampleRate")).toInt();
-
-    const QString coverBase64 = obj.value(QStringLiteral("coverPngBase64")).toString();
-    if (!coverBase64.isEmpty()) {
-        const QByteArray coverData = QByteArray::fromBase64(coverBase64.toLatin1());
-        QPixmap cover;
-        if (!coverData.isEmpty())
-            cover.loadFromData(coverData, "PNG");
-        entry.metadata.coverArt = cover;
-    }
-
-    if (entry.metadata.coverArt.isNull())
-        entry.metadata.coverArt = defaultCoverPixmap();
-
-    return true;
-}
-
-void flushTrackMetadataCacheToDisk(bool force = false)
-{
-    QHash<QString, TrackMetadataCacheEntry> snapshot;
-    {
-        QMutexLocker locker(&s_trackMetadataCacheMutex);
-        if (!s_trackMetadataCacheLoaded)
-            return;
-
-        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        if (!force) {
-            if (!s_trackMetadataCacheDirty)
-                return;
-            if (s_trackMetadataCacheLastFlushMs > 0
-                && (nowMs - s_trackMetadataCacheLastFlushMs) < kTrackMetadataDiskFlushIntervalMs) {
-                return;
-            }
-            s_trackMetadataCacheLastFlushMs = nowMs;
-        }
-
-        snapshot = s_trackMetadataCache;
-        s_trackMetadataCacheDirty = false;
-    }
-
-    QJsonArray entries;
-    int written = 0;
-    for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it) {
-        if (written >= kTrackMetadataDiskCacheMaxEntries)
-            break;
-
-        entries.append(serializeTrackMetadataEntry(it.value()));
-        ++written;
-    }
-
-    QJsonObject root;
-    root[QStringLiteral("version")] = kTrackMetadataDiskCacheVersion;
-    root[QStringLiteral("entries")] = entries;
-
-    QSaveFile out(trackMetadataCacheFilePath());
-    if (!out.open(QIODevice::WriteOnly))
-        return;
-
-    out.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    out.commit();
-}
-
-void flushTrackMetadataCacheAtExit()
-{
-    flushTrackMetadataCacheToDisk(true);
+    QSqlQuery q(db);
+    q.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
+    q.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
+    q.exec(QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS track_metadata ("
+        "  path TEXT PRIMARY KEY,"
+        "  file_size INTEGER NOT NULL,"
+        "  last_modified INTEGER NOT NULL,"
+        "  title TEXT,"
+        "  artist TEXT,"
+        "  album TEXT,"
+        "  year TEXT,"
+        "  genre TEXT,"
+        "  track_number INTEGER,"
+        "  duration INTEGER,"
+        "  bitrate INTEGER,"
+        "  sample_rate INTEGER,"
+        "  cover_png BLOB"
+        ")"
+    ));
+    return db;
 }
 
 void ensureTrackMetadataCacheLoaded()
@@ -322,46 +232,46 @@ void ensureTrackMetadataCacheLoaded()
         s_trackMetadataCacheLoaded = true;
     }
 
-    static const bool registeredPostRoutine = []() {
-        return std::atexit(flushTrackMetadataCacheAtExit) == 0;
-    }();
-    Q_UNUSED(registeredPostRoutine);
-
-    QFile in(trackMetadataCacheFilePath());
-    if (!in.open(QIODevice::ReadOnly))
+    QSqlDatabase db = openCacheDb();
+    if (!db.isOpen())
         return;
 
-    const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
-    if (!doc.isObject())
-        return;
+    QSqlQuery q(db);
+    q.exec(QStringLiteral(
+        "SELECT path, file_size, last_modified, title, artist, album, year, genre,"
+        "       track_number, duration, bitrate, sample_rate, cover_png"
+        " FROM track_metadata"
+    ));
 
-    const QJsonObject root = doc.object();
-    if (root.value(QStringLiteral("version")).toInt() != kTrackMetadataDiskCacheVersion)
-        return;
-
-    const QJsonArray entries = root.value(QStringLiteral("entries")).toArray();
-
-    QHash<QString, TrackMetadataCacheEntry> loaded;
-    loaded.reserve(entries.size());
-    for (const QJsonValue &value : entries) {
-        if (!value.isObject())
-            continue;
-
+    QMutexLocker locker(&s_trackMetadataCacheMutex);
+    while (q.next()) {
         TrackMetadataCacheEntry entry;
-        if (!deserializeTrackMetadataEntry(value.toObject(), entry))
-            continue;
+        entry.metadata.filePath   = q.value(0).toString();
+        entry.fileSize            = q.value(1).toLongLong();
+        entry.lastModifiedMs      = q.value(2).toLongLong();
+        entry.metadata.title      = q.value(3).toString();
+        entry.metadata.artist     = q.value(4).toString();
+        entry.metadata.album      = q.value(5).toString();
+        entry.metadata.year       = q.value(6).toString();
+        entry.metadata.genre      = q.value(7).toString();
+        entry.metadata.trackNumber = q.value(8).toInt();
+        entry.metadata.duration   = q.value(9).toLongLong();
+        entry.metadata.bitrate    = q.value(10).toInt();
+        entry.metadata.sampleRate = q.value(11).toInt();
+
+        const QByteArray coverData = q.value(12).toByteArray();
+        if (!coverData.isEmpty())
+            entry.metadata.coverArt = QImage::fromData(coverData, "PNG");
+        if (entry.metadata.coverArt.isNull())
+            entry.metadata.coverArt = defaultCoverImage();
 
         const QString key = normalizeTrackPathForCache(entry.metadata.filePath);
         if (!key.isEmpty())
-            loaded.insert(key, entry);
+            s_trackMetadataCache.insert(key, entry);
 
-        if (loaded.size() >= kTrackMetadataCacheMaxEntries)
+        if (s_trackMetadataCache.size() >= kTrackMetadataCacheMaxEntries)
             break;
     }
-
-    QMutexLocker locker(&s_trackMetadataCacheMutex);
-    s_trackMetadataCache = loaded;
-    s_trackMetadataCacheDirty = false;
 }
 
 QString normalizeTrackPathForCache(const QString &path)
@@ -404,23 +314,58 @@ void updateTrackMetadataCache(const QFileInfo &fileInfo, const TrackMetadata &me
     if (!fileInfo.exists())
         return;
 
-    QMutexLocker locker(&s_trackMetadataCacheMutex);
-
-    if (s_trackMetadataCache.size() >= kTrackMetadataCacheMaxEntries)
-        s_trackMetadataCache.clear();
-
     const QString key = normalizeTrackPathForCache(fileInfo.absoluteFilePath());
+    const qint64 fileSize = fileInfo.size();
+    const qint64 lastModifiedMs = fileInfo.lastModified().toMSecsSinceEpoch();
 
-    TrackMetadataCacheEntry entry;
-    entry.metadata = metadata;
-    entry.metadata.filePath = fileInfo.absoluteFilePath();
-    entry.fileSize = fileInfo.size();
-    entry.lastModifiedMs = fileInfo.lastModified().toMSecsSinceEpoch();
-    s_trackMetadataCache.insert(key, entry);
-    s_trackMetadataCacheDirty = true;
-    locker.unlock();
+    // Update in-memory cache
+    {
+        QMutexLocker locker(&s_trackMetadataCacheMutex);
+        if (s_trackMetadataCache.size() >= kTrackMetadataCacheMaxEntries)
+            s_trackMetadataCache.clear();
 
-    flushTrackMetadataCacheToDisk(false);
+        TrackMetadataCacheEntry entry;
+        entry.metadata = metadata;
+        entry.metadata.filePath = fileInfo.absoluteFilePath();
+        entry.fileSize = fileSize;
+        entry.lastModifiedMs = lastModifiedMs;
+        s_trackMetadataCache.insert(key, entry);
+    }
+
+    // Write to SQLite — cover as raw PNG bytes (no base64 overhead)
+    QByteArray coverBytes;
+    if (!metadata.coverArt.isNull() && !isDefaultCoverImage(metadata.coverArt)) {
+        QBuffer buf(&coverBytes);
+        if (buf.open(QIODevice::WriteOnly))
+            metadata.coverArt.save(&buf, "PNG");
+    }
+
+    QSqlDatabase db = openCacheDb();
+    if (!db.isOpen())
+        return;
+
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO track_metadata"
+        " (path, file_size, last_modified, title, artist, album, year, genre,"
+        "  track_number, duration, bitrate, sample_rate, cover_png)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ));
+    q.addBindValue(fileInfo.absoluteFilePath());
+    q.addBindValue(fileSize);
+    q.addBindValue(lastModifiedMs);
+    q.addBindValue(metadata.title);
+    q.addBindValue(metadata.artist);
+    q.addBindValue(metadata.album);
+    q.addBindValue(metadata.year);
+    q.addBindValue(metadata.genre);
+    q.addBindValue(metadata.trackNumber);
+    q.addBindValue(metadata.duration);
+    q.addBindValue(metadata.bitrate);
+    q.addBindValue(metadata.sampleRate);
+    q.addBindValue(coverBytes.isEmpty() ? QVariant(QMetaType(QMetaType::QByteArray)) : QVariant(coverBytes));
+    if (!q.exec())
+        qWarning() << "[cache] SQLite insert failed:" << q.lastError().text();
 }
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
@@ -592,7 +537,7 @@ void applyFfmpegMetadata(const QString &filePath, TrackMetadata &metadata)
     avformat_close_input(&formatCtx);
 }
 
-QPixmap decodeCoverPacketWithFfmpeg(const AVStream *stream, const AVPacket *packet)
+QImage decodeCoverPacketWithFfmpeg(const AVStream *stream, const AVPacket *packet)
 {
     if (!stream || !stream->codecpar || !packet || !packet->data || packet->size <= 0)
         return {};
@@ -624,62 +569,35 @@ QPixmap decodeCoverPacketWithFfmpeg(const AVStream *stream, const AVPacket *pack
         return {};
     }
 
-    auto frameToPixmap = [](const AVFrame *decodedFrame) -> QPixmap {
+    auto frameToImage = [](const AVFrame *decodedFrame) -> QImage {
         if (!decodedFrame || decodedFrame->width <= 0 || decodedFrame->height <= 0)
             return {};
 
         SwsContext *sws = sws_getContext(
-            decodedFrame->width,
-            decodedFrame->height,
+            decodedFrame->width, decodedFrame->height,
             static_cast<AVPixelFormat>(decodedFrame->format),
-            decodedFrame->width,
-            decodedFrame->height,
-            AV_PIX_FMT_RGB24,
-            SWS_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr);
+            decodedFrame->width, decodedFrame->height,
+            AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
         if (!sws)
             return {};
 
         QByteArray rgb;
         rgb.resize(decodedFrame->width * decodedFrame->height * 3);
-
-        uint8_t *dstData[4] = {
-            reinterpret_cast<uint8_t *>(rgb.data()),
-            nullptr,
-            nullptr,
-            nullptr
-        };
-        int dstLinesize[4] = {decodedFrame->width * 3, 0, 0, 0};
-
-        sws_scale(
-            sws,
-            decodedFrame->data,
-            decodedFrame->linesize,
-            0,
-            decodedFrame->height,
-            dstData,
-            dstLinesize);
-
+        uint8_t *dstData[4] = { reinterpret_cast<uint8_t *>(rgb.data()), nullptr, nullptr, nullptr };
+        int dstLinesize[4] = { decodedFrame->width * 3, 0, 0, 0 };
+        sws_scale(sws, decodedFrame->data, decodedFrame->linesize, 0, decodedFrame->height, dstData, dstLinesize);
         sws_freeContext(sws);
 
         QImage image(reinterpret_cast<const uchar *>(rgb.constData()),
-                     decodedFrame->width,
-                     decodedFrame->height,
-                     dstLinesize[0],
-                     QImage::Format_RGB888);
-        const QImage copy = image.copy();
-        if (copy.isNull())
-            return {};
-
-        return QPixmap::fromImage(copy);
+                     decodedFrame->width, decodedFrame->height,
+                     dstLinesize[0], QImage::Format_RGB888);
+        return image.copy();
     };
 
-    QPixmap result;
+    QImage result;
     if (avcodec_send_packet(codecCtx, packet) >= 0) {
         while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-            result = frameToPixmap(frame);
+            result = frameToImage(frame);
             if (!result.isNull())
                 break;
         }
@@ -721,7 +639,7 @@ AVCodecID detectImageCodecId(const QByteArray &bytes)
     return AV_CODEC_ID_NONE;
 }
 
-QPixmap decodeImageBytesWithFfmpeg(const QByteArray &bytes)
+QImage decodeImageBytesWithFfmpeg(const QByteArray &bytes)
 {
     const AVCodecID codecId = detectImageCodecId(bytes);
     if (codecId == AV_CODEC_ID_NONE)
@@ -743,10 +661,8 @@ QPixmap decodeImageBytesWithFfmpeg(const QByteArray &bytes)
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
     if (!packet || !frame) {
-        if (packet)
-            av_packet_free(&packet);
-        if (frame)
-            av_frame_free(&frame);
+        if (packet) av_packet_free(&packet);
+        if (frame) av_frame_free(&frame);
         avcodec_free_context(&codecCtx);
         return {};
     }
@@ -760,62 +676,35 @@ QPixmap decodeImageBytesWithFfmpeg(const QByteArray &bytes)
 
     std::memcpy(packet->data, bytes.constData(), static_cast<size_t>(bytes.size()));
 
-    auto frameToPixmap = [](const AVFrame *decodedFrame) -> QPixmap {
+    auto frameToImage = [](const AVFrame *decodedFrame) -> QImage {
         if (!decodedFrame || decodedFrame->width <= 0 || decodedFrame->height <= 0)
             return {};
 
         SwsContext *sws = sws_getContext(
-            decodedFrame->width,
-            decodedFrame->height,
+            decodedFrame->width, decodedFrame->height,
             static_cast<AVPixelFormat>(decodedFrame->format),
-            decodedFrame->width,
-            decodedFrame->height,
-            AV_PIX_FMT_RGB24,
-            SWS_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr);
+            decodedFrame->width, decodedFrame->height,
+            AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
         if (!sws)
             return {};
 
         QByteArray rgb;
         rgb.resize(decodedFrame->width * decodedFrame->height * 3);
-
-        uint8_t *dstData[4] = {
-            reinterpret_cast<uint8_t *>(rgb.data()),
-            nullptr,
-            nullptr,
-            nullptr
-        };
-        int dstLinesize[4] = {decodedFrame->width * 3, 0, 0, 0};
-
-        sws_scale(
-            sws,
-            decodedFrame->data,
-            decodedFrame->linesize,
-            0,
-            decodedFrame->height,
-            dstData,
-            dstLinesize);
-
+        uint8_t *dstData[4] = { reinterpret_cast<uint8_t *>(rgb.data()), nullptr, nullptr, nullptr };
+        int dstLinesize[4] = { decodedFrame->width * 3, 0, 0, 0 };
+        sws_scale(sws, decodedFrame->data, decodedFrame->linesize, 0, decodedFrame->height, dstData, dstLinesize);
         sws_freeContext(sws);
 
         QImage image(reinterpret_cast<const uchar *>(rgb.constData()),
-                     decodedFrame->width,
-                     decodedFrame->height,
-                     dstLinesize[0],
-                     QImage::Format_RGB888);
-        const QImage copy = image.copy();
-        if (copy.isNull())
-            return {};
-
-        return QPixmap::fromImage(copy);
+                     decodedFrame->width, decodedFrame->height,
+                     dstLinesize[0], QImage::Format_RGB888);
+        return image.copy();
     };
 
-    QPixmap result;
+    QImage result;
     if (avcodec_send_packet(codecCtx, packet) >= 0) {
         while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-            result = frameToPixmap(frame);
+            result = frameToImage(frame);
             if (!result.isNull())
                 break;
         }
@@ -827,7 +716,7 @@ QPixmap decodeImageBytesWithFfmpeg(const QByteArray &bytes)
     return result;
 }
 
-QPixmap extractEmbeddedCoverArt(const QString &filePath)
+QImage extractEmbeddedCoverArt(const QString &filePath)
 {
     coverLog(filePath, QStringLiteral("extractEmbeddedCoverArt: begin"));
 
@@ -840,7 +729,6 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
     if (err < 0) {
         if (formatCtx)
             avformat_close_input(&formatCtx);
-
         const QByteArray ansiPath = QFile::encodeName(nativePath);
         if (ansiPath != utf8Path)
             err = avformat_open_input(&formatCtx, ansiPath.constData(), nullptr, nullptr);
@@ -862,7 +750,7 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
              QStringLiteral("extractEmbeddedCoverArt: video packet fallback %1")
                  .arg(allowVideoPacketScan ? QStringLiteral("enabled") : QStringLiteral("disabled")));
 
-    QPixmap cover;
+    QImage cover;
     const auto tryPacket = [&cover, &filePath](const AVPacket *packet,
                                                int streamIndex,
                                                const QString &origin) {
@@ -871,14 +759,12 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
 
         const QImage image = QImage::fromData(packet->data, packet->size);
         if (!image.isNull()) {
-            cover = QPixmap::fromImage(image);
+            cover = image;
             coverLog(filePath,
                      QStringLiteral("extractEmbeddedCoverArt: %1 stream=%2 decoded via QImage, bytes=%3, %4")
-                         .arg(origin)
-                         .arg(streamIndex)
-                         .arg(packet->size)
-                         .arg(describePixmapForLog(cover)));
-            return !cover.isNull();
+                         .arg(origin).arg(streamIndex).arg(packet->size)
+                         .arg(describeImageForLog(cover)));
+            return true;
         }
 
         const QByteArray raw(reinterpret_cast<const char *>(packet->data), packet->size);
@@ -886,10 +772,8 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
         if (!cover.isNull()) {
             coverLog(filePath,
                      QStringLiteral("extractEmbeddedCoverArt: %1 stream=%2 decoded via FFmpeg-image-bytes, bytes=%3, %4")
-                         .arg(origin)
-                         .arg(streamIndex)
-                         .arg(packet->size)
-                         .arg(describePixmapForLog(cover)));
+                         .arg(origin).arg(streamIndex).arg(packet->size)
+                         .arg(describeImageForLog(cover)));
         }
         return !cover.isNull();
     };
@@ -904,38 +788,31 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
         const int codecId = stream->codecpar ? static_cast<int>(stream->codecpar->codec_id) : -1;
         coverLog(filePath,
                  QStringLiteral("extractEmbeddedCoverArt: stream=%1 codecType=%2 codecId=%3 attached_pic=%4")
-                     .arg(static_cast<int>(i))
-                     .arg(codecType)
-                     .arg(codecId)
+                     .arg(static_cast<int>(i)).arg(codecType).arg(codecId)
                      .arg((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0 ? 1 : 0));
 
         if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0) {
             if (tryPacket(&stream->attached_pic, static_cast<int>(i), QStringLiteral("attached_pic")))
                 break;
 
-            const QPixmap decoded = decodeCoverPacketWithFfmpeg(stream, &stream->attached_pic);
+            const QImage decoded = decodeCoverPacketWithFfmpeg(stream, &stream->attached_pic);
             if (!decoded.isNull()) {
                 cover = decoded;
                 coverLog(filePath,
                          QStringLiteral("extractEmbeddedCoverArt: stream=%1 decoded via FFmpeg-packet, %2")
-                             .arg(static_cast<int>(i))
-                             .arg(describePixmapForLog(cover)));
+                             .arg(static_cast<int>(i)).arg(describeImageForLog(cover)));
                 break;
             }
         }
 
-        if (cover.isNull()
-            && allowVideoPacketScan
-            && stream->codecpar
+        if (cover.isNull() && allowVideoPacketScan && stream->codecpar
             && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            if (isLikelyCoverImageCodecId(stream->codecpar->codec_id)) {
+            if (isLikelyCoverImageCodecId(stream->codecpar->codec_id))
                 videoCoverStreamIndices.append(static_cast<int>(i));
-            } else {
+            else
                 coverLog(filePath,
                          QStringLiteral("extractEmbeddedCoverArt: stream=%1 skipped for packet scan (non-image codecId=%2)")
-                             .arg(static_cast<int>(i))
-                             .arg(codecId));
-            }
+                             .arg(static_cast<int>(i)).arg(codecId));
         }
     }
 
@@ -965,31 +842,28 @@ QPixmap extractEmbeddedCoverArt(const QString &filePath)
                 }
 
                 const AVStream *stream = formatCtx->streams[packet.stream_index];
-                const QPixmap decoded = decodeCoverPacketWithFfmpeg(stream, &packet);
+                const QImage decoded = decodeCoverPacketWithFfmpeg(stream, &packet);
                 if (!decoded.isNull()) {
                     cover = decoded;
                     coverLog(filePath,
                              QStringLiteral("extractEmbeddedCoverArt: stream=%1 video packet decoded via FFmpeg-packet, %2")
-                                 .arg(packet.stream_index)
-                                 .arg(describePixmapForLog(cover)));
+                                 .arg(packet.stream_index).arg(describeImageForLog(cover)));
                     av_packet_unref(&packet);
                     break;
                 }
             }
-
             av_packet_unref(&packet);
             ++packetsScanned;
         }
 
         coverLog(filePath,
                  QStringLiteral("extractEmbeddedCoverArt: video packet scan finished, scanned=%1 candidates=%2")
-                     .arg(packetsScanned)
-                     .arg(videoCoverStreamIndices.size()));
+                     .arg(packetsScanned).arg(videoCoverStreamIndices.size()));
     }
 
     coverLog(filePath,
              QStringLiteral("extractEmbeddedCoverArt: result=%1")
-                 .arg(describePixmapForLog(cover)));
+                 .arg(describeImageForLog(cover)));
 
     avformat_close_input(&formatCtx);
     return cover;
@@ -1058,14 +932,14 @@ int findImageDataOffset(const QByteArray &data, int from)
     return best;
 }
 
-QPixmap decodeCoverPixmap(const QByteArray &bytes)
+QImage decodeCoverImage(const QByteArray &bytes)
 {
     if (bytes.isEmpty())
         return {};
 
     const QImage image = QImage::fromData(bytes);
     if (!image.isNull())
-        return QPixmap::fromImage(image);
+        return image;
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
     return decodeImageBytesWithFfmpeg(bytes);
@@ -1090,7 +964,7 @@ int findTextTerminator(const QByteArray &data, int start, quint8 encoding)
     return data.indexOf('\0', start);
 }
 
-QPixmap extractMp3Id3ApicCover(const QString &filePath)
+QImage extractMp3Id3ApicCover(const QString &filePath)
 {
     coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: begin"));
 
@@ -1180,7 +1054,7 @@ QPixmap extractMp3Id3ApicCover(const QString &filePath)
             if (mimeEnd > cursor) {
                 cursor = mimeEnd + 1;
                 if (cursor < payload.size()) {
-                    ++cursor; // picture type
+                    ++cursor;
                     const int descEnd = findTextTerminator(payload, cursor, encoding);
                     if (descEnd >= 0)
                         imageStart = descEnd + ((encoding == 1 || encoding == 2) ? 2 : 1);
@@ -1189,17 +1063,16 @@ QPixmap extractMp3Id3ApicCover(const QString &filePath)
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, qMax(1, cursor));
             if (imageStart >= 0 && imageStart < payload.size()) {
-                const QPixmap pm = decodeCoverPixmap(payload.mid(imageStart));
-                if (!pm.isNull()) {
-                    coverLog(filePath,
-                             QStringLiteral("extractMp3Id3ApicCover: APIC decoded, %1")
-                                 .arg(describePixmapForLog(pm)));
-                    return pm;
+                const QImage img = decodeCoverImage(payload.mid(imageStart));
+                if (!img.isNull()) {
+                    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: APIC decoded, %1")
+                                 .arg(describeImageForLog(img)));
+                    return img;
                 }
             }
         } else if (frameId == "PIC" && payload.size() > 6) {
             const quint8 encoding = static_cast<quint8>(payload[0]);
-            int cursor = 1 + 3 + 1; // encoding + image format + picture type
+            int cursor = 1 + 3 + 1;
             const int descEnd = findTextTerminator(payload, cursor, encoding);
             int imageStart = -1;
             if (descEnd >= 0)
@@ -1207,12 +1080,11 @@ QPixmap extractMp3Id3ApicCover(const QString &filePath)
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, cursor);
             if (imageStart >= 0 && imageStart < payload.size()) {
-                const QPixmap pm = decodeCoverPixmap(payload.mid(imageStart));
-                if (!pm.isNull()) {
-                    coverLog(filePath,
-                             QStringLiteral("extractMp3Id3ApicCover: PIC decoded, %1")
-                                 .arg(describePixmapForLog(pm)));
-                    return pm;
+                const QImage img = decodeCoverImage(payload.mid(imageStart));
+                if (!img.isNull()) {
+                    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: PIC decoded, %1")
+                                 .arg(describeImageForLog(img)));
+                    return img;
                 }
             }
         }
@@ -1222,12 +1094,11 @@ QPixmap extractMp3Id3ApicCover(const QString &filePath)
 
     const int rawImagePos = findImageDataOffset(tag, 0);
     if (rawImagePos >= 0 && rawImagePos < tag.size()) {
-        const QPixmap pm = decodeCoverPixmap(tag.mid(rawImagePos));
-        if (!pm.isNull()) {
-            coverLog(filePath,
-                     QStringLiteral("extractMp3Id3ApicCover: raw tag signature decoded, %1")
-                         .arg(describePixmapForLog(pm)));
-            return pm;
+        const QImage img = decodeCoverImage(tag.mid(rawImagePos));
+        if (!img.isNull()) {
+            coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: raw tag signature decoded, %1")
+                         .arg(describeImageForLog(img)));
+            return img;
         }
     }
 
@@ -1258,6 +1129,14 @@ void TrackItem::ensureMetadataLoaded()
     TrackMetadata cachedMeta;
     cachedMeta.filePath = m_metadata.filePath;
     if (tryLoadTrackMetadataFromCache(fileInfo, cachedMeta)) {
+        // Refresh cover if cached one is default/suspicious
+        if (isDefaultCoverImage(cachedMeta.coverArt) || isSuspiciousCoverImage(cachedMeta.coverArt)) {
+            const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
+            if (!refreshedCover.isNull() && !isDefaultCoverImage(refreshedCover)) {
+                cachedMeta.coverArt = refreshedCover;
+                updateTrackMetadataCache(fileInfo, cachedMeta);
+            }
+        }
         m_metadata = cachedMeta;
         m_metadataLoaded = true;
         return;
@@ -1269,22 +1148,22 @@ void TrackItem::ensureMetadataLoaded()
     // Load cover art (the main visual part)
     m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
     if (m_metadata.coverArt.isNull())
-        m_metadata.coverArt = defaultCoverPixmap();
+        m_metadata.coverArt = defaultCoverImage();
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
-    // Load FFmpeg metadata (title, artist, etc.)
+    // Load FFmpeg metadata (title, artist, etc.) — always prefer real tags over filename guesses
     TrackMetadata probe;
     probe.filePath = m_metadata.filePath;
     applyFfmpegMetadata(m_metadata.filePath, probe);
-    if (m_metadata.title.isEmpty()) m_metadata.title = probe.title;
-    if (m_metadata.artist.isEmpty()) m_metadata.artist = probe.artist;
-    if (m_metadata.album.isEmpty()) m_metadata.album = probe.album;
-    if (m_metadata.genre.isEmpty()) m_metadata.genre = probe.genre;
-    if (m_metadata.year.isEmpty()) m_metadata.year = probe.year;
-    if (m_metadata.trackNumber <= 0) m_metadata.trackNumber = probe.trackNumber;
-    if (m_metadata.sampleRate <= 0) m_metadata.sampleRate = probe.sampleRate;
-    if (m_metadata.bitrate <= 0) m_metadata.bitrate = probe.bitrate;
-    if (m_metadata.duration <= 0) m_metadata.duration = probe.duration;
+    if (!probe.title.isEmpty()) m_metadata.title = probe.title;
+    if (!probe.artist.isEmpty()) m_metadata.artist = probe.artist;
+    if (!probe.album.isEmpty()) m_metadata.album = probe.album;
+    if (!probe.genre.isEmpty()) m_metadata.genre = probe.genre;
+    if (!probe.year.isEmpty()) m_metadata.year = probe.year;
+    if (probe.trackNumber > 0) m_metadata.trackNumber = probe.trackNumber;
+    if (probe.sampleRate > 0) m_metadata.sampleRate = probe.sampleRate;
+    if (probe.bitrate > 0) m_metadata.bitrate = probe.bitrate;
+    if (probe.duration > 0) m_metadata.duration = probe.duration;
 #endif
 
     // Handle format-specific duration
@@ -1334,7 +1213,7 @@ void TrackItem::initializeBasicMetadata()
     }
 
     m_metadata.album = fileInfo.dir().dirName();
-    m_metadata.coverArt = defaultCoverPixmap();
+    m_metadata.coverArt = defaultCoverImage();
     m_metadata.duration = 0;
 }
 
@@ -1355,7 +1234,7 @@ void TrackItem::loadMetadata()
 
         m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
         if (m_metadata.coverArt.isNull())
-            m_metadata.coverArt = defaultCoverPixmap();
+            m_metadata.coverArt = defaultCoverImage();
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
         TrackMetadata probe;
@@ -1386,21 +1265,19 @@ void TrackItem::loadMetadata()
     if (tryLoadTrackMetadataFromCache(fileInfo, m_metadata)) {
         coverLog(m_metadata.filePath,
                  QStringLiteral("loadMetadata: cache hit, cover=%1")
-                     .arg(describePixmapForLog(m_metadata.coverArt)));
+                     .arg(describeImageForLog(m_metadata.coverArt)));
 
-        if (fileInfo.suffix().compare("mp3", Qt::CaseInsensitive) == 0
-            && (isDefaultCoverPixmap(m_metadata.coverArt)
-                || isSuspiciousCoverPixmap(m_metadata.coverArt))) {
+        if (isDefaultCoverImage(m_metadata.coverArt) || isSuspiciousCoverImage(m_metadata.coverArt)) {
             coverLog(m_metadata.filePath,
                      QStringLiteral("loadMetadata: cache cover is default/suspicious, refreshing"));
 
-            const QPixmap refreshedCover = extractCoverArt(m_metadata.filePath);
-            if (!refreshedCover.isNull()) {
+            const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
+            if (!refreshedCover.isNull() && !isDefaultCoverImage(refreshedCover)) {
                 m_metadata.coverArt = refreshedCover;
                 updateTrackMetadataCache(fileInfo, m_metadata);
                 coverLog(m_metadata.filePath,
                          QStringLiteral("loadMetadata: cache refresh applied, cover=%1")
-                             .arg(describePixmapForLog(m_metadata.coverArt)));
+                             .arg(describeImageForLog(m_metadata.coverArt)));
             } else {
                 coverLog(m_metadata.filePath,
                          QStringLiteral("loadMetadata: cache refresh failed, keeping previous cover"));
@@ -1416,7 +1293,7 @@ void TrackItem::loadMetadata()
     m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
     coverLog(m_metadata.filePath,
              QStringLiteral("loadMetadata: after extractCoverArt cover=%1")
-                 .arg(describePixmapForLog(m_metadata.coverArt)));
+                 .arg(describeImageForLog(m_metadata.coverArt)));
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
     applyFfmpegMetadata(m_metadata.filePath, m_metadata);
@@ -1437,7 +1314,7 @@ void TrackItem::loadMetadata()
     updateTrackMetadataCache(fileInfo, m_metadata);
     coverLog(m_metadata.filePath,
              QStringLiteral("loadMetadata: completed, cover=%1")
-                 .arg(describePixmapForLog(m_metadata.coverArt)));
+                 .arg(describeImageForLog(m_metadata.coverArt)));
     m_metadataLoaded = true;
 }
 
@@ -1502,29 +1379,27 @@ void TrackItem::loadFullMetadata(const QMediaMetaData &metaData)
     if (coverVar.isValid()) {
         QImage coverImage = coverVar.value<QImage>();
         if (!coverImage.isNull()) {
-            const QPixmap qtCover = QPixmap::fromImage(coverImage);
-
-            if (!isSuspiciousCoverPixmap(qtCover)) {
-                m_metadata.coverArt = qtCover;
+            if (!isSuspiciousCoverImage(coverImage)) {
+                m_metadata.coverArt = coverImage;
                 coverLog(m_metadata.filePath,
                          QStringLiteral("loadFullMetadata: accepted Qt cover, %1")
-                             .arg(describePixmapForLog(qtCover)));
-            } else if (isDefaultCoverPixmap(m_metadata.coverArt)
-                       || isSuspiciousCoverPixmap(m_metadata.coverArt)) {
+                             .arg(describeImageForLog(coverImage)));
+            } else if (isDefaultCoverImage(m_metadata.coverArt)
+                       || isSuspiciousCoverImage(m_metadata.coverArt)) {
                 coverLog(m_metadata.filePath,
                          QStringLiteral("loadFullMetadata: rejected suspicious Qt cover, current=%1")
-                             .arg(describePixmapForLog(m_metadata.coverArt)));
-                const QPixmap refreshedCover = extractCoverArt(m_metadata.filePath);
+                             .arg(describeImageForLog(m_metadata.coverArt)));
+                const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
                 if (!refreshedCover.isNull()) {
                     m_metadata.coverArt = refreshedCover;
                     coverLog(m_metadata.filePath,
                              QStringLiteral("loadFullMetadata: fallback cover applied, %1")
-                                 .arg(describePixmapForLog(m_metadata.coverArt)));
+                                 .arg(describeImageForLog(m_metadata.coverArt)));
                 }
             } else {
                 coverLog(m_metadata.filePath,
                          QStringLiteral("loadFullMetadata: rejected suspicious Qt cover, preserved existing=%1")
-                             .arg(describePixmapForLog(m_metadata.coverArt)));
+                             .arg(describeImageForLog(m_metadata.coverArt)));
             }
         }
     }
@@ -1722,7 +1597,7 @@ qint64 TrackItem::readMp3Duration(const QString &filePath)
     return (fileSize * 8) / (bitrate / 1000);
 }
 
-QPixmap TrackItem::extractCoverArt(const QString &filePath)
+QImage TrackItem::extractCoverArt(const QString &filePath)
 {
     QFileInfo fileInfo(filePath);
     QString dirPath = fileInfo.absolutePath();
@@ -1738,26 +1613,24 @@ QPixmap TrackItem::extractCoverArt(const QString &filePath)
         "Folder.jpg", "Album.jpg", "Front.jpg", "COVER.JPG", "FOLDER.JPG"
     };
 
-    QPixmap folderCoverFallback;
+    QImage folderCoverFallback;
     QString folderCoverFallbackPath;
 
     for (const QString &coverName : coverNames) {
         QString coverPath = dirPath + "/" + coverName;
         if (QFile::exists(coverPath)) {
-            QPixmap pixmap(coverPath);
-            if (!pixmap.isNull()) {
-                const QPixmap scaled = pixmap;
-
-                if (isSuspiciousCoverPixmap(scaled)) {
+            QImage img(coverPath);
+            if (!img.isNull()) {
+                if (isSuspiciousCoverImage(img)) {
                     coverLog(filePath,
                              QStringLiteral("extractCoverArt: folder image rejected as suspicious -> %1, %2")
                                  .arg(QDir::toNativeSeparators(coverPath))
-                                 .arg(describePixmapForLog(scaled)));
+                                 .arg(describeImageForLog(img)));
                     continue;
                 }
 
                 if (isMp3) {
-                    folderCoverFallback = scaled;
+                    folderCoverFallback = img;
                     folderCoverFallbackPath = coverPath;
                     coverLog(filePath,
                              QStringLiteral("extractCoverArt: folder image candidate for MP3 fallback -> %1")
@@ -1768,53 +1641,53 @@ QPixmap TrackItem::extractCoverArt(const QString &filePath)
                 coverLog(filePath,
                          QStringLiteral("extractCoverArt: folder image used -> %1")
                              .arg(QDir::toNativeSeparators(coverPath)));
-                return scaled;
+                return img;
             }
         }
     }
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
-    QPixmap embeddedCover = extractEmbeddedCoverArt(filePath);
-    if (!embeddedCover.isNull() && !isSuspiciousCoverPixmap(embeddedCover)) {
+    QImage embeddedCover = extractEmbeddedCoverArt(filePath);
+    if (!embeddedCover.isNull() && !isSuspiciousCoverImage(embeddedCover)) {
         coverLog(filePath,
                  QStringLiteral("extractCoverArt: using embedded FFmpeg cover, %1")
-                     .arg(describePixmapForLog(embeddedCover)));
+                     .arg(describeImageForLog(embeddedCover)));
         return embeddedCover;
     }
 
-    if (!embeddedCover.isNull() && isSuspiciousCoverPixmap(embeddedCover)) {
+    if (!embeddedCover.isNull() && isSuspiciousCoverImage(embeddedCover)) {
         coverLog(filePath,
                  QStringLiteral("extractCoverArt: embedded FFmpeg cover rejected as suspicious, %1")
-                     .arg(describePixmapForLog(embeddedCover)));
+                     .arg(describeImageForLog(embeddedCover)));
     }
 #endif
 
     if (isMp3) {
-        QPixmap mp3Cover = extractMp3Id3ApicCover(filePath);
-        if (!mp3Cover.isNull() && !isSuspiciousCoverPixmap(mp3Cover)) {
+        QImage mp3Cover = extractMp3Id3ApicCover(filePath);
+        if (!mp3Cover.isNull() && !isSuspiciousCoverImage(mp3Cover)) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: using MP3 ID3 cover, %1")
-                         .arg(describePixmapForLog(mp3Cover)));
+                         .arg(describeImageForLog(mp3Cover)));
             return mp3Cover;
         }
 
-        if (!mp3Cover.isNull() && isSuspiciousCoverPixmap(mp3Cover)) {
+        if (!mp3Cover.isNull() && isSuspiciousCoverImage(mp3Cover)) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: MP3 ID3 cover rejected as suspicious, %1")
-                         .arg(describePixmapForLog(mp3Cover)));
+                         .arg(describeImageForLog(mp3Cover)));
         }
 
         if (!folderCoverFallback.isNull()) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: using MP3 folder fallback -> %1, %2")
                          .arg(QDir::toNativeSeparators(folderCoverFallbackPath))
-                         .arg(describePixmapForLog(folderCoverFallback)));
+                         .arg(describeImageForLog(folderCoverFallback)));
             return folderCoverFallback;
         }
     }
 
     coverLog(filePath, QStringLiteral("extractCoverArt: fallback to default cover"));
-    return defaultCoverPixmap();
+    return defaultCoverImage();
 }
 
 QString TrackItem::formatDuration(qint64 milliseconds)
@@ -1828,15 +1701,15 @@ QString TrackItem::formatDuration(qint64 milliseconds)
     return QString("%1:%2").arg(minutes, 2, 10, QChar('0')).arg(seconds, 2, 10, QChar('0'));
 }
 
-QPixmap TrackItem::coverArtFromFile(const QString &filePath)
+QImage TrackItem::coverArtFromFile(const QString &filePath)
 {
-    QPixmap cover = extractCoverArt(filePath);
+    QImage cover = extractCoverArt(filePath);
     if (cover.isNull())
-        cover = defaultCoverPixmap();
+        cover = defaultCoverImage();
     return cover;
 }
 
-TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QPixmap &sharedCover)
+TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QImage &sharedCover)
 {
     auto *item = new TrackItem(ct.audioFilePath, true);
 
@@ -1854,7 +1727,7 @@ TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QPixmap &sharedCove
     item->m_metadata.cueFilePath = ct.cueFilePath;
     item->m_metadata.isCueTrack  = true;
     item->m_metadata.duration    = (ct.endMs >= 0) ? (ct.endMs - ct.startMs) : 0;
-    item->m_metadata.coverArt    = sharedCover.isNull() ? defaultCoverPixmap() : sharedCover;
+    item->m_metadata.coverArt    = sharedCover.isNull() ? defaultCoverImage() : sharedCover;
     item->m_metadataLoaded       = true;
 
     return item;
