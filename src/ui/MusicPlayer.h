@@ -187,6 +187,8 @@ private:
     QString m_preparedNextPath;
     QString m_resumeOnPlayPath;
     qint64 m_resumeOnPlayPositionMs = -1;
+    bool m_activeIsCue = false;
+    qint64 m_activeCueStartMs = -1;
     qint64 m_activeCueEndMs = -1;
 
     PlaylistManager *m_playlistManager = nullptr;

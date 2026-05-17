@@ -142,7 +142,7 @@ private:
     int                    m_durationMs   { 0 };
     bool                   m_userSeeking  { false };
     bool                   m_isOpen       { false };
-    int                    m_volumeValue  { 0 };c
+    int                    m_volumeValue  { 0 };
 
     QVector<QColor>        m_palette;
     QImage                 m_noiseFrame;

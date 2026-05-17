@@ -1129,13 +1129,19 @@ void MusicPlayer::onBackgroundMetadataLoaded(const QString &filePath)
 
     // Update UI for tracks matching this file path
     const QString needle = normalizePathForCompare(filePath);
+    const int playingTrackIndex = resolvePlayingTrackIndex();
+
     for (int trackIndex = 0; trackIndex < m_tracks.count(); ++trackIndex) {
         TrackItem *track = m_tracks[trackIndex];
         if (track && normalizePathForCompare(track->filePath()) == needle) {
             track->ensureMetadataLoaded();
             updateTrackRow(trackIndex);
-            // Also update bottom bar if this is the currently selected/playing track
-            if (trackIndex == m_currentIndex)
+            
+            const bool shouldUpdateBottom = (playingTrackIndex >= 0)
+                ? (trackIndex == playingTrackIndex)
+                : (m_engine->state() == GaplessAudioEngine::Stopped && trackIndex == m_currentIndex);
+
+            if (shouldUpdateBottom)
                 updateBottomBarFromTrack(track);
         }
     }
@@ -1324,8 +1330,8 @@ void MusicPlayer::onPlaylistSelected(int row)
 
     m_currentIndex = findRememberedTrackIndexForPlaylist(newId);
 
-    if (m_currentIndex < 0 && keepPlayback && !activePath.isEmpty())
-        m_currentIndex = findTrackIndexByPath(activePath);
+    if (m_currentIndex < 0 && keepPlayback)
+        m_currentIndex = resolvePlayingTrackIndex();
 
     if (m_currentIndex >= 0)
         rememberCurrentTrackForPlaylist(newId);
@@ -2305,7 +2311,13 @@ void MusicPlayer::forceLoadMetadataForTracks(const QList<TrackItem*> &tracks, co
             const int trackIndex = m_tracks.indexOf(track);
             if (trackIndex >= 0)
                 updateTrackRow(trackIndex);
-            if (trackIndex == m_currentIndex)
+
+            const int playingIdx = resolvePlayingTrackIndex();
+            const bool shouldUpdateBottom = (playingIdx >= 0)
+                ? (trackIndex == playingIdx)
+                : (m_engine->state() == GaplessAudioEngine::Stopped && trackIndex == m_currentIndex);
+
+            if (shouldUpdateBottom)
                 updateBottomBarFromTrack(track);
         }
 
@@ -2342,7 +2354,12 @@ void MusicPlayer::onMetaDataLoaded()
 
             updateTrackRow(m_metadataLoadIndex);
 
-            if (m_metadataLoadIndex == m_currentIndex)
+            const int playingIdx = resolvePlayingTrackIndex();
+            const bool shouldUpdateBottom = (playingIdx >= 0)
+                ? (m_metadataLoadIndex == playingIdx)
+                : (m_engine->state() == GaplessAudioEngine::Stopped && m_metadataLoadIndex == m_currentIndex);
+
+            if (shouldUpdateBottom)
                 updateBottomBarFromTrack(track);
         }
 
@@ -2645,6 +2662,16 @@ void MusicPlayer::addCueFile(const QString &cuePath)
 
 void MusicPlayer::advanceCueTrack()
 {
+    const QString viewedPlaylistId = m_currentPlaylistId;
+    const bool shouldRestoreView = !viewedPlaylistId.isEmpty()
+        && !m_playbackPlaylistId.isEmpty()
+        && viewedPlaylistId != m_playbackPlaylistId;
+    
+    if (shouldRestoreView)
+        setUpdatesEnabled(false);
+
+    ensurePlaybackContextPlaylistActive();
+
     const int currentIdx = m_currentIndex;
     m_activeCueEndMs = -1;
 
@@ -2652,6 +2679,13 @@ void MusicPlayer::advanceCueTrack()
     if (nextIdx < 0 || nextIdx >= m_tracks.count()) {
         m_engine->stop();
         m_positionSlider->setValue(0);
+        
+        if (shouldRestoreView) {
+            if (m_currentPlaylistId != viewedPlaylistId)
+                selectPlaylistById(viewedPlaylistId);
+            setUpdatesEnabled(true);
+            update();
+        }
         return;
     }
 
@@ -2673,13 +2707,17 @@ void MusicPlayer::advanceCueTrack()
         const qint64 currentEndMs = m_tracks[currentIdx]->metadata().cueEndMs;
         TrackItem *track = m_tracks[m_currentIndex];
         const qint64 nextStartMs = qMax<qint64>(0, track->metadata().cueStartMs);
+
+        m_activeIsCue = track->metadata().isCueTrack;
+        m_activeCueStartMs = nextStartMs;
+        m_activeCueEndMs = track->metadata().cueEndMs;
+
         // Skip in-file seek for contiguous CUE boundaries to avoid decoder/output reset glitches.
         const bool contiguousBoundary = currentEndMs >= 0
             && qAbs(nextStartMs - currentEndMs) <= 15;
         if (!contiguousBoundary)
             m_engine->seek(nextStartMs);
-        m_activeCueEndMs = track->metadata().cueEndMs;
-
+        
         const qint64 dur = track->metadata().duration;
         if (dur > 0) {
             m_positionSlider->setRange(0, static_cast<int>(dur));
@@ -2689,10 +2727,24 @@ void MusicPlayer::advanceCueTrack()
         updateBottomBarFromTrack(track);
         updateLikeButtonState();
         updatePlaylistHighlight();
+
+        if (shouldRestoreView) {
+            if (m_currentPlaylistId != viewedPlaylistId)
+                selectPlaylistById(viewedPlaylistId);
+            setUpdatesEnabled(true);
+            update();
+        }
         return;
     }
 
     playCurrentItem();
+
+    if (shouldRestoreView) {
+        if (m_currentPlaylistId != viewedPlaylistId)
+            selectPlaylistById(viewedPlaylistId);
+        setUpdatesEnabled(true);
+        update();
+    }
 }
 
 // ============= Table =============
@@ -2855,7 +2907,13 @@ void MusicPlayer::playPause()
     }
 }
 
-void MusicPlayer::stop() { m_engine->stop(); m_positionSlider->setValue(0); }
+void MusicPlayer::stop() { 
+    m_engine->stop(); 
+    m_positionSlider->setValue(0);
+    m_activeIsCue = false;
+    m_activeCueStartMs = -1;
+    m_activeCueEndMs = -1;
+}
 
 bool MusicPlayer::isValidTrackIndex(int index) const
 {
@@ -3178,19 +3236,25 @@ int MusicPlayer::findTrackIndexByPath(const QString &filePath) const
     if (filePath.isEmpty())
         return -1;
 
-#ifdef Q_OS_WIN
-    const QString needle = QDir::toNativeSeparators(QDir::cleanPath(filePath)).toLower();
-#else
-    const QString needle = QDir::cleanPath(filePath);
-#endif
+    if (isCueSavedPath(filePath)) {
+        QString cuePath;
+        int trackNum = 0;
+        if (parseCueSavedPath(filePath, cuePath, trackNum)) {
+            const QString needle = normalizePathForCompare(cuePath);
+            for (int i = 0; i < m_tracks.count(); ++i) {
+                const TrackMetadata &md = m_tracks[i]->metadata();
+                if (md.isCueTrack && md.trackNumber == trackNum &&
+                    normalizePathForCompare(md.cueFilePath) == needle) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
 
+    const QString needle = normalizePathForCompare(filePath);
     for (int i = 0; i < m_tracks.count(); ++i) {
-#ifdef Q_OS_WIN
-        const QString candidate = QDir::toNativeSeparators(QDir::cleanPath(m_tracks[i]->filePath())).toLower();
-#else
-        const QString candidate = QDir::cleanPath(m_tracks[i]->filePath());
-#endif
-        if (candidate == needle)
+        if (normalizePathForCompare(m_tracks[i]->filePath()) == needle)
             return i;
     }
 
@@ -3302,39 +3366,34 @@ void MusicPlayer::seek(int position)
             << "enginePosBeforeMs=" << m_engine->position()
             << "durationMs=" << m_engine->duration()
             << "state=" << engineStateToString(m_engine->state());
+    
     qint64 engineTarget = position;
-    if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()) {
-        TrackItem *t = m_tracks[m_currentIndex];
-        if (t->metadata().isCueTrack)
-            engineTarget = t->metadata().cueStartMs + static_cast<qint64>(position);
-    }
+    if (m_activeIsCue)
+        engineTarget = m_activeCueStartMs + static_cast<qint64>(position);
+    
     m_engine->seek(engineTarget);
 }
 
 void MusicPlayer::updatePosition(qint64 position) {
     qInfo() << "[ui] updatePosition: pos=" << position << "idx=" << m_currentIndex << "slider=" << m_positionSlider->value();
-    if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()) {
-        TrackItem *t = m_tracks[m_currentIndex];
-        if (t->metadata().isCueTrack) {
-            if (m_activeCueEndMs >= 0 && position >= m_activeCueEndMs) {
-                m_activeCueEndMs = -1;
-                QTimer::singleShot(0, this, &MusicPlayer::advanceCueTrack);
-                return;
-            }
-            const qint64 rel = qMax<qint64>(0, position - t->metadata().cueStartMs);
-            if (!m_userSeeking && !m_seekPending)
-                m_positionSlider->setValue(static_cast<int>(rel));
-            // Don't update time label during seek - position values are unreliable
-            if (!m_seekPending)
-                m_currentTimeLabel->setText(formatTime(rel));
-            if (m_fullscreenPlayer && !m_seekPending)
-                m_fullscreenPlayer->updatePosition(static_cast<int>(rel));
-            // skip the rest of the original updatePosition body for CUE:
+    
+    if (m_activeIsCue) {
+        if (m_activeCueEndMs >= 0 && position >= m_activeCueEndMs) {
+            m_activeCueEndMs = -1;
+            QTimer::singleShot(0, this, &MusicPlayer::advanceCueTrack);
             return;
         }
+        const qint64 rel = qMax<qint64>(0, position - m_activeCueStartMs);
+        if (!m_userSeeking && !m_seekPending)
+            m_positionSlider->setValue(static_cast<int>(rel));
+        // Don't update time label during seek - position values are unreliable
+        if (!m_seekPending)
+            m_currentTimeLabel->setText(formatTime(rel));
+        if (m_fullscreenPlayer && !m_seekPending)
+            m_fullscreenPlayer->updatePosition(static_cast<int>(rel));
+        return;
     }
 
-    // ── original non-CUE code continues unchanged from here: ──
     if (!m_userSeeking && !m_seekPending) m_positionSlider->setValue(static_cast<int>(position));
     // Don't update time label during seek - position values are unreliable until decoder catches up
     if (!m_seekPending)
@@ -3353,26 +3412,35 @@ void MusicPlayer::updatePosition(qint64 position) {
 }
 
 void MusicPlayer::updateDuration(qint64 duration) {
-    if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()
-            && m_tracks[m_currentIndex]->metadata().isCueTrack) {
-        TrackItem *t = m_tracks[m_currentIndex];
-        if (t->metadata().cueEndMs < 0) {
-            const qint64 cueDur = qMax<qint64>(0, duration - t->metadata().cueStartMs);
-            t->metadata().duration = cueDur;
+    if (m_activeIsCue) {
+        if (m_activeCueEndMs < 0) {
+            const qint64 cueDur = qMax<qint64>(0, duration - m_activeCueStartMs);
             m_positionSlider->setRange(0, static_cast<int>(cueDur));
             m_totalTimeLabel->setText(formatTime(cueDur));
-            const int vr = getVisualRowFromTrackIndex(m_currentIndex);
-            if (vr != -1) {
-                if (QTableWidgetItem *durItem = m_playlistTable->item(vr, COL_DURATION))
-                    durItem->setText(formatTime(cueDur));
+            
+            int playingIdx = resolvePlayingTrackIndex();
+            if (playingIdx >= 0) {
+                TrackItem *t = m_tracks[playingIdx];
+                t->metadata().duration = cueDur;
+                const int vr = getVisualRowFromTrackIndex(playingIdx);
+                if (vr != -1) {
+                    if (QTableWidgetItem *durItem = m_playlistTable->item(vr, COL_DURATION))
+                        durItem->setText(formatTime(cueDur));
+                }
             }
+
             if (m_fullscreenPlayer) {
-                const QString title = t->metadata().title.isEmpty()
-                    ? QFileInfo(t->filePath()).baseName()
-                    : t->metadata().title;
-                m_fullscreenPlayer->updateTrack(t->metadata().coverPixmap(),
+                QString title;
+                QString artist;
+                if (playingIdx >= 0) {
+                    title = m_tracks[playingIdx]->metadata().title;
+                    artist = m_tracks[playingIdx]->metadata().artist;
+                }
+                if (title.isEmpty()) title = QFileInfo(m_engine->currentFilePath()).baseName();
+
+                m_fullscreenPlayer->updateTrack(m_bottomCoverLabel->pixmap(),
                                                 title,
-                                                t->metadata().artist,
+                                                artist,
                                                 static_cast<int>(cueDur));
             }
         }
@@ -3380,13 +3448,14 @@ void MusicPlayer::updateDuration(qint64 duration) {
     }
 
     // Always update duration - don't block on small decreases
-    // The slider range must match current track's actual duration
     m_positionSlider->setRange(0, static_cast<int>(duration));
     m_totalTimeLabel->setText(formatTime(duration));
-    if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()) {
-        if (m_tracks[m_currentIndex]->metadata().duration == 0) {
-            m_tracks[m_currentIndex]->metadata().duration = duration;
-            int visualRow = getVisualRowFromTrackIndex(m_currentIndex);
+    
+    int playingIdx = resolvePlayingTrackIndex();
+    if (playingIdx >= 0) {
+        if (m_tracks[playingIdx]->metadata().duration == 0) {
+            m_tracks[playingIdx]->metadata().duration = duration;
+            int visualRow = getVisualRowFromTrackIndex(playingIdx);
             if (visualRow != -1) {
                 if (QTableWidgetItem *durItem = m_playlistTable->item(visualRow, COL_DURATION))
                     durItem->setText(formatTime(duration));
@@ -3432,14 +3501,17 @@ void MusicPlayer::playCurrentItem()
 
     m_engine->play(track->filePath());
 
+    m_activeIsCue = track->metadata().isCueTrack;
+    m_activeCueStartMs = track->metadata().cueStartMs;
     m_activeCueEndMs = -1;
-    if (track->metadata().isCueTrack) {
+
+    if (m_activeIsCue) {
         m_engine->prepareNext(QString());
         m_preparedNextPath.clear();
         m_preparedNextIndex = -1;
 
-        if (track->metadata().cueStartMs > 0)
-            m_engine->seek(track->metadata().cueStartMs);
+        if (m_activeCueStartMs > 0)
+            m_engine->seek(m_activeCueStartMs);
 
         m_activeCueEndMs = track->metadata().cueEndMs;
 
@@ -3929,9 +4001,15 @@ void MusicPlayer::rememberCurrentTrackForPlaylist(const QString &playlistId)
     if (!isValidTrackIndex(m_currentIndex))
         return;
 
-    const QString path = QFileInfo(m_tracks[m_currentIndex]->filePath()).absoluteFilePath();
-    if (!path.isEmpty())
-        m_playlistLastTrackPath.insert(playlistId, path);
+    TrackItem *track = m_tracks[m_currentIndex];
+    QString key;
+    if (track->metadata().isCueTrack)
+        key = makeCueSavedPath(track->metadata().cueFilePath, track->metadata().trackNumber);
+    else
+        key = QFileInfo(track->filePath()).absoluteFilePath();
+
+    if (!key.isEmpty())
+        m_playlistLastTrackPath.insert(playlistId, key);
 }
 
 int MusicPlayer::findRememberedTrackIndexForPlaylist(const QString &playlistId) const
