@@ -1718,10 +1718,18 @@ void MusicPlayer::deleteSelectedPlaylist()
 
     m_playlistScrollPositions.remove(id);
 
-    if (id == m_currentPlaylistId) {
-        stopDeferredMetadataLoading();
+    const bool deletingPlayingPlaylist = (id == m_playbackPlaylistId);
+    const bool deletingViewedPlaylist = (id == m_currentPlaylistId);
+
+    if (deletingPlayingPlaylist) {
         m_engine->stop();
+        m_playbackPlaylistId.clear();
         m_currentIndex = -1;
+        m_playbackTrackKey.clear();
+    }
+
+    if (deletingViewedPlaylist) {
+        stopDeferredMetadataLoading();
         qDeleteAll(m_tracks);
         m_tracks.clear();
         m_currentPlaylistId.clear();
@@ -3470,6 +3478,8 @@ void MusicPlayer::playlistItemDoubleClicked(int row, int column) {
 
     int trackIndex = getTrackIndexFromVisualRow(row);
     if (trackIndex != -1) {
+        m_resumeOnPlayPath.clear();
+        m_resumeOnPlayPositionMs = -1;
         m_currentIndex = trackIndex;
         playCurrentItem();
     }
@@ -3492,12 +3502,16 @@ void MusicPlayer::playCurrentItem()
         updateTrackRow(m_currentIndex);
     }
 
-    // Always clear resume position when clicking a track
-    // This ensures the track plays from the beginning when clicked
-    m_resumeOnPlayPath.clear();
-    m_resumeOnPlayPositionMs = -1;
-
     const QString currentPath = QFileInfo(track->filePath()).absoluteFilePath();
+    QString currentKey = currentPath;
+    if (track->metadata().isCueTrack)
+        currentKey = makeCueSavedPath(track->metadata().cueFilePath, track->metadata().trackNumber);
+
+    // If the track we are about to play doesn't match the resume path, clear resume info
+    if (!m_resumeOnPlayPath.isEmpty() && normalizePathForCompare(currentKey) != normalizePathForCompare(m_resumeOnPlayPath)) {
+        m_resumeOnPlayPath.clear();
+        m_resumeOnPlayPositionMs = -1;
+    }
 
     m_engine->play(track->filePath());
 
@@ -3510,9 +3524,6 @@ void MusicPlayer::playCurrentItem()
         m_preparedNextPath.clear();
         m_preparedNextIndex = -1;
 
-        if (m_activeCueStartMs > 0)
-            m_engine->seek(m_activeCueStartMs);
-
         m_activeCueEndMs = track->metadata().cueEndMs;
 
         const qint64 dur = track->metadata().duration;
@@ -3520,6 +3531,18 @@ void MusicPlayer::playCurrentItem()
             m_positionSlider->setRange(0, static_cast<int>(dur));
             m_totalTimeLabel->setText(formatTime(dur));
         }
+
+        if (!m_resumeOnPlayPath.isEmpty() && m_resumeOnPlayPositionMs > 0) {
+            const qint64 seekPos = m_resumeOnPlayPositionMs;
+            m_resumeOnPlayPath.clear();
+            m_resumeOnPlayPositionMs = -1;
+            m_engine->seek(m_activeCueStartMs + seekPos);
+            m_positionSlider->setValue(static_cast<int>(seekPos));
+            m_currentTimeLabel->setText(formatTime(seekPos));
+        } else if (m_activeCueStartMs > 0) {
+            m_engine->seek(m_activeCueStartMs);
+        }
+
         updateBottomBarFromTrack(track);
         updateLikeButtonState();
         updatePlaylistHighlight();
@@ -3911,19 +3934,26 @@ void MusicPlayer::savePlaybackState()
     settings.setValue("volume", qBound(0, volume, 100));
 
     QString currentPath;
-    if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count())
-        currentPath = QFileInfo(m_tracks[m_currentIndex]->filePath()).absoluteFilePath();
-    else if (m_engine && !m_engine->currentFilePath().isEmpty())
-        currentPath = QFileInfo(m_engine->currentFilePath()).absoluteFilePath();
-
     qint64 positionMs = 0;
-    if (m_engine
-        && (m_engine->state() == GaplessAudioEngine::Playing
-            || m_engine->state() == GaplessAudioEngine::Paused)) {
-        positionMs = qMax<qint64>(0, m_engine->position());
+
+    if (isValidTrackIndex(m_currentIndex)) {
+        TrackItem *track = m_tracks[m_currentIndex];
+        if (track->metadata().isCueTrack)
+            currentPath = makeCueSavedPath(track->metadata().cueFilePath, track->metadata().trackNumber);
+        else
+            currentPath = QFileInfo(track->filePath()).absoluteFilePath();
+        
+        if (m_engine && m_engine->state() != GaplessAudioEngine::Stopped) {
+            positionMs = m_engine->position();
+            if (track->metadata().isCueTrack)
+                positionMs = qMax<qint64>(0, positionMs - track->metadata().cueStartMs);
+        } else {
+            positionMs = m_positionSlider->value();
+        }
+    } else if (m_engine && !m_engine->currentFilePath().isEmpty()) {
+        currentPath = QFileInfo(m_engine->currentFilePath()).absoluteFilePath();
+        positionMs = m_engine->position();
     }
-    if (positionMs <= 0 && m_positionSlider)
-        positionMs = qMax<qint64>(0, static_cast<qint64>(m_positionSlider->value()));
 
     if (!m_resumeOnPlayPath.isEmpty()
         && !currentPath.isEmpty()

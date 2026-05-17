@@ -62,14 +62,64 @@ bool isSuspiciousCoverImage(const QImage &image)
     if (image.isNull())
         return false;
 
+    const int width = image.width();
+    const int height = image.height();
+    
+    // Minimum resolution check
+    if (width < 32 || height < 32)
+        return true;
+
+    // Relaxed noise detection. Only very extreme cases of corruption are rejected.
+    if (height > 100) {
+        auto getRoughness = [&](int yStart, int yEnd) -> double {
+            double totalDiff = 0;
+            int count = 0;
+            const int yStep = qMax(2, (yEnd - yStart) / 8);
+            for (int y = yStart; y < yEnd; y += yStep) {
+                if (y >= height) break;
+                for (int x = 8; x < width; x += 8) {
+                    QRgb p1 = image.pixel(x, y);
+                    QRgb p2 = image.pixel(x - 8, y);
+                    totalDiff += std::abs(qRed(p1) - qRed(p2)) + 
+                                 std::abs(qGreen(p1) - qGreen(p2)) + 
+                                 std::abs(qBlue(p1) - qBlue(p2));
+                    count++;
+                }
+            }
+            return count > 0 ? (totalDiff / count) : 0;
+        };
+
+        const double topRoughness = getRoughness(0, height / 4);
+        const double bottomRoughness = getRoughness((height * 3) / 4, height);
+        
+        // Only reject if bottom is EXTREMELY more noisy than top (characteristic of mid-image JPEG fail)
+        if (bottomRoughness > 180.0 && bottomRoughness > topRoughness * 6.0) {
+            return true;
+        }
+
+        // Check for large solid gray/black blocks at the VERY bottom
+        int artifactPixels = 0;
+        int checked = 0;
+        const int band = 4;
+        for (int y = height - band; y < height; ++y) {
+            for (int x = 0; x < width; x += 10) {
+                QRgb px = image.pixel(x, y);
+                int r = qRed(px); int g = qGreen(px); int b = qBlue(px);
+                if ((std::abs(r-128) < 4 && std::abs(g-128) < 4 && std::abs(b-128) < 4) ||
+                    (r < 4 && g < 4 && b < 4)) {
+                    artifactPixels++;
+                }
+                checked++;
+            }
+        }
+        if (checked > 20 && artifactPixels > (checked * 95) / 100) {
+            return true;
+        }
+    }
+
     const QImage converted = image.convertToFormat(QImage::Format_ARGB32);
     if (converted.isNull())
         return false;
-
-    const int width = converted.width();
-    const int height = converted.height();
-    if (width <= 0 || height <= 0)
-        return true;
 
     const int stepX = qMax(1, width / 16);
     const int stepY = qMax(1, height / 16);
@@ -552,12 +602,11 @@ bool isLikelyCoverImageCodecId(AVCodecID codecId)
     }
 }
 
-bool shouldScanVideoPacketsForEmbeddedCover(const QString &filePath)
+bool shouldScanVideoPacketsForEmbeddedCover(const QString &)
 {
-    // The packet-scan fallback is only needed for edge-case MP3 files
-    // where cover is stored as a video stream without attached_pic flag.
-    const QFileInfo fi(filePath);
-    return fi.suffix().compare("mp3", Qt::CaseInsensitive) == 0;
+    // Enable for all formats as some "messy" taggers hide covers in video streams 
+    // without the attached_pic flag, even in FLAC files.
+    return true;
 }
 
 void applyFfmpegMetadata(const QString &filePath, TrackMetadata &metadata)
@@ -566,10 +615,10 @@ void applyFfmpegMetadata(const QString &filePath, TrackMetadata &metadata)
     const QString nativePath = QDir::toNativeSeparators(filePath);
     const QByteArray utf8Path = nativePath.toUtf8();
 
-    // Use minimal probing for metadata extraction - only need tags, not full decode
+    // Sane probe size (1MB) - plenty for tags, fast for UI
     AVDictionary *openOpts = nullptr;
     av_dict_set(&openOpts, "analyzeduration", "100000", 0);
-    av_dict_set(&openOpts, "probesize", "32768", 0);
+    av_dict_set(&openOpts, "probesize", "1048576", 0);
     int err = avformat_open_input(&formatCtx, utf8Path.constData(), nullptr, &openOpts);
     av_dict_free(&openOpts);
 
@@ -842,14 +891,23 @@ QImage extractEmbeddedCoverArt(const QString &filePath)
     const QString nativePath = QDir::toNativeSeparators(filePath);
     const QByteArray utf8Path = nativePath.toUtf8();
 
-    int err = avformat_open_input(&formatCtx, utf8Path.constData(), nullptr, nullptr);
+    auto openWithLargeProbe = [&formatCtx](const QByteArray &path) {
+        AVDictionary *opts = nullptr;
+        av_dict_set(&opts, "probesize", "1572864", 0);
+        av_dict_set(&opts, "analyzeduration", "1000000", 0);
+        int err = avformat_open_input(&formatCtx, path.constData(), nullptr, &opts);
+        av_dict_free(&opts);
+        return err;
+    };
+
+    int err = openWithLargeProbe(utf8Path);
 #ifdef Q_OS_WIN
     if (err < 0) {
         if (formatCtx)
             avformat_close_input(&formatCtx);
         const QByteArray ansiPath = QFile::encodeName(nativePath);
         if (ansiPath != utf8Path)
-            err = avformat_open_input(&formatCtx, ansiPath.constData(), nullptr, nullptr);
+            err = openWithLargeProbe(ansiPath);
     }
 #endif
     if (err < 0 || !formatCtx) {
@@ -875,6 +933,7 @@ QImage extractEmbeddedCoverArt(const QString &filePath)
         if (!packet || !packet->data || packet->size <= 0)
             return false;
 
+        // Try decoding directly first - QImage is very good at sniffing format even if mimetype is wrong
         const QImage image = QImage::fromData(packet->data, packet->size);
         if (!image.isNull()) {
             cover = image;
@@ -885,6 +944,7 @@ QImage extractEmbeddedCoverArt(const QString &filePath)
             return true;
         }
 
+        // FFmpeg fallback
         const QByteArray raw(reinterpret_cast<const char *>(packet->data), packet->size);
         cover = decodeImageBytesWithFfmpeg(raw);
         if (!cover.isNull()) {
@@ -904,23 +964,19 @@ QImage extractEmbeddedCoverArt(const QString &filePath)
 
         const int codecType = stream->codecpar ? static_cast<int>(stream->codecpar->codec_type) : -1;
         const int codecId = stream->codecpar ? static_cast<int>(stream->codecpar->codec_id) : -1;
+        
+        // Disposition check for explicitly marked covers
+        const bool isAttachedPic = (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+        
         coverLog(filePath,
                  QStringLiteral("extractEmbeddedCoverArt: stream=%1 codecType=%2 codecId=%3 attached_pic=%4")
                      .arg(static_cast<int>(i)).arg(codecType).arg(codecId)
-                     .arg((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0 ? 1 : 0));
+                     .arg(isAttachedPic ? 1 : 0));
 
-        if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0) {
+        if (isAttachedPic) {
+            // Even if FFmpeg says mimetype is unknown, the data is in the attached_pic packet
             if (tryPacket(&stream->attached_pic, static_cast<int>(i), QStringLiteral("attached_pic")))
                 break;
-
-            const QImage decoded = decodeCoverPacketWithFfmpeg(stream, &stream->attached_pic);
-            if (!decoded.isNull()) {
-                cover = decoded;
-                coverLog(filePath,
-                         QStringLiteral("extractEmbeddedCoverArt: stream=%1 decoded via FFmpeg-packet, %2")
-                             .arg(static_cast<int>(i)).arg(describeImageForLog(cover)));
-                break;
-            }
         }
 
         if (cover.isNull() && allowVideoPacketScan && stream->codecpar
@@ -1025,29 +1081,83 @@ int findImageDataOffset(const QByteArray &data, int from)
     const int start = qMax(0, from);
     int best = -1;
 
-    auto consider = [&data, start, &best](const QByteArray &sig, bool needsWebpMarker = false) {
-        int pos = data.indexOf(sig, start);
-        while (pos >= 0) {
-            if (needsWebpMarker) {
-                if (pos + 12 > data.size() || data.mid(pos + 8, 4) != "WEBP") {
-                    pos = data.indexOf(sig, pos + 1);
-                    continue;
-                }
-            }
-            if (best < 0 || pos < best)
-                best = pos;
-            break;
-        }
+    auto updateBest = [&best](int pos) {
+        if (pos >= 0 && (best < 0 || pos < best))
+            best = pos;
     };
 
-    consider(QByteArray::fromHex("FFD8FF")); // JPEG
-    consider(QByteArray("\x89PNG\r\n\x1A\n", 8)); // PNG
-    consider(QByteArray("GIF87a"));
-    consider(QByteArray("GIF89a"));
-    consider(QByteArray("BM")); // BMP
-    consider(QByteArray("RIFF"), true); // WEBP
+    // JPEG: FF D8 FF
+    updateBest(data.indexOf(QByteArray::fromHex("FFD8FF"), start));
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    updateBest(data.indexOf(QByteArray("\x89PNG\r\n\x1A\n", 8), start));
+
+    // GIF
+    updateBest(data.indexOf(QByteArray("GIF87a"), start));
+    updateBest(data.indexOf(QByteArray("GIF89a"), start));
+
+    // WEBP: RIFF .... WEBP
+    int riffPos = data.indexOf(QByteArray("RIFF"), start);
+    while (riffPos >= 0) {
+        if (riffPos + 12 <= data.size() && data.mid(riffPos + 8, 4) == "WEBP") {
+            updateBest(riffPos);
+            break;
+        }
+        riffPos = data.indexOf(QByteArray("RIFF"), riffPos + 1);
+    }
+
+    // BMP: "BM" + size + reserved(0) + offset. 
+    // We must be VERY strict to avoid false positives in raw audio.
+    int bmpPos = data.indexOf(QByteArray("BM"), start);
+    while (bmpPos >= 0) {
+        if (bmpPos + 18 <= data.size()) {
+            // Check reserved bytes at offsets 6,7,8,9 (must be 0)
+            if (data[bmpPos + 6] == 0 && data[bmpPos + 7] == 0 && 
+                data[bmpPos + 8] == 0 && data[bmpPos + 9] == 0) {
+                // Check header size at offset 14 (4 bytes, little endian)
+                const uchar *p = reinterpret_cast<const uchar*>(data.constData() + bmpPos + 14);
+                quint32 headerSize = static_cast<quint32>(p[0]) | 
+                                    (static_cast<quint32>(p[1]) << 8) |
+                                    (static_cast<quint32>(p[2]) << 16) |
+                                    (static_cast<quint32>(p[3]) << 24);
+                if (headerSize == 40 || headerSize == 56 || headerSize == 64 || 
+                    headerSize == 108 || headerSize == 124) {
+                    updateBest(bmpPos);
+                    break;
+                }
+            }
+        }
+        bmpPos = data.indexOf(QByteArray("BM"), bmpPos + 1);
+    }
 
     return best;
+}
+
+QImage makeSquareImage(const QImage &img)
+{
+    if (img.isNull())
+        return img;
+    
+    const int w = img.width();
+    const int h = img.height();
+    if (w <= 0 || h <= 0)
+        return img;
+
+    if (w == h)
+        return img;
+
+    const int size = qMin(w, h);
+    const int x = (w - size) / 2;
+    const int y = (h - size) / 2;
+    
+    // Use copy() to get a deep copy of the square region
+    QImage square = img.copy(x, y, size, size);
+    
+    // Ensure the format is preserved and the image is valid
+    if (square.isNull())
+        return img;
+
+    return square;
 }
 
 QImage decodeCoverImage(const QByteArray &bytes)
@@ -1055,15 +1165,27 @@ QImage decodeCoverImage(const QByteArray &bytes)
     if (bytes.isEmpty())
         return {};
 
-    const QImage image = QImage::fromData(bytes);
-    if (!image.isNull())
-        return image;
+    QImage image;
 
+    // JPEG validation: FF D8 ... FF D9
+    if (bytes.startsWith(QByteArray::fromHex("FFD8"))) {
+        int eoi = bytes.lastIndexOf(QByteArray::fromHex("FFD9"));
+        if (eoi != -1) {
+            // Use only the data up to the last EOI marker for a clean decode
+            image = QImage::fromData(bytes.left(eoi + 2));
+        }
+    }
+
+    if (image.isNull())
+        image = QImage::fromData(bytes);
+
+    if (image.isNull()) {
 #ifdef MUSICPLAYER_HAS_FFMPEG
-    return decodeImageBytesWithFfmpeg(bytes);
-#else
-    return {};
+        image = decodeImageBytesWithFfmpeg(bytes);
 #endif
+    }
+
+    return makeSquareImage(image);
 }
 
 int findTextTerminator(const QByteArray &data, int start, quint8 encoding)
@@ -1160,13 +1282,8 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
     if (tagSize == 0)
         return {};
 
-    // Broken taggers often write standard 32-bit integers or incorrect sizes.
-    // We read a generous chunk (up to 5MB) to ensure we capture the entire APIC frame
-    // even if tagSize is incorrectly small. The image decoder will stop at the image EOF.
-    qint64 readSize = static_cast<qint64>(tagSize);
-    const qint64 kMinSafeRead = 5 * 1024 * 1024;
-    if (readSize < kMinSafeRead)
-        readSize = kMinSafeRead;
+    // Standard safety read (4MB) to handle most covers including those with slightly wrong sizes.
+    qint64 readSize = qMax<qint64>(static_cast<qint64>(tagSize), 4 * 1024 * 1024);
     if (readSize > file.size() - 10)
         readSize = file.size() - 10;
 
@@ -1259,16 +1376,21 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
             }
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, qMax(1, cursor));
+            
             if (imageStart >= 0) {
-                const int absoluteImageStart = pos + frameHeaderSize + imageStart;
-                if (absoluteImageStart < tag.size()) {
-                    QByteArray imageData = tag.mid(absoluteImageStart);
+                const int absoluteImageStartInTag = pos + frameHeaderSize + imageStart;
+                if (absoluteImageStartInTag < tag.size()) {
+                    QByteArray imageData;
                     if (versionMajor == 4 && (frameFlags & 0x02) != 0) {
-                        imageData = payload.mid(imageStart);
+                        const QByteArray restOfTag = tag.mid(absoluteImageStartInTag);
+                        imageData = decodeUnsynchronization(restOfTag);
+                    } else {
+                        imageData = tag.mid(absoluteImageStartInTag);
                     }
+
                     const QImage img = decodeCoverImage(imageData);
                     if (!img.isNull()) {
-                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: APIC decoded, %1")
+                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: success, %1")
                                      .arg(describeImageForLog(img)));
                         return img;
                     }
@@ -1283,16 +1405,14 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
                 imageStart = descEnd + ((encoding == 1 || encoding == 2) ? 2 : 1);
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, cursor);
+            
             if (imageStart >= 0) {
-                const int absoluteImageStart = pos + frameHeaderSize + imageStart;
-                if (absoluteImageStart < tag.size()) {
-                    QByteArray imageData = tag.mid(absoluteImageStart);
-                    if (versionMajor == 4 && (frameFlags & 0x02) != 0) {
-                        imageData = payload.mid(imageStart);
-                    }
+                const int absoluteImageStartInTag = pos + frameHeaderSize + imageStart;
+                if (absoluteImageStartInTag < tag.size()) {
+                    const QByteArray imageData = tag.mid(absoluteImageStartInTag);
                     const QImage img = decodeCoverImage(imageData);
                     if (!img.isNull()) {
-                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: PIC decoded, %1")
+                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: success (PIC), %1")
                                      .arg(describeImageForLog(img)));
                         return img;
                     }
@@ -1303,17 +1423,7 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
         pos += frameHeaderSize + frameSize;
     }
 
-    const int rawImagePos = findImageDataOffset(tag, 0);
-    if (rawImagePos >= 0 && rawImagePos < tag.size()) {
-        const QImage img = decodeCoverImage(tag.mid(rawImagePos));
-        if (!img.isNull()) {
-            coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: raw tag signature decoded, %1")
-                         .arg(describeImageForLog(img)));
-            return img;
-        }
-    }
-
-    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: no usable image found"));
+    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: no image found"));
     return {};
 }
 
@@ -1356,72 +1466,37 @@ void TrackItem::ensureMetadataLoaded()
     if (m_metadataLoaded)
         return;
 
-    // Fast path: try to load from cache
-    QFileInfo fileInfo(m_metadata.filePath);
-
-    // First try memory-only cache (fast)
+    const QFileInfo fileInfo(m_metadata.filePath);
     TrackMetadata cachedMeta;
     cachedMeta.filePath = m_metadata.filePath;
+
     if (tryLoadTrackMetadataFromCache(fileInfo, cachedMeta)) {
-        // Refresh cover if cached one is default/suspicious
-        if (isDefaultCoverImage(cachedMeta.coverArt) || isSuspiciousCoverImage(cachedMeta.coverArt)) {
-            const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
-            if (!refreshedCover.isNull() && !isDefaultCoverImage(refreshedCover)) {
-                cachedMeta.coverArt = refreshedCover;
-                updateTrackMetadataCache(fileInfo, cachedMeta);
-            }
-        }
         m_metadata = cachedMeta;
         m_metadataLoaded = true;
+        
+        // Background refresh only if strictly necessary
+        const bool isDefault = isDefaultCoverImage(m_metadata.coverArt);
+        const bool isSuspicious = isSuspiciousCoverImage(m_metadata.coverArt);
+
+        if (isDefault || isSuspicious) {
+            const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
+            
+            // CRITICAL FIX: Always update the cache to prevent an infinite loop 
+            // of re-searching every time the playlist is opened. 
+            // If refreshed is still null/default, we save it as "final result" for this file.
+            if (!refreshedCover.isNull()) {
+                m_metadata.coverArt = refreshedCover;
+            } else if (isSuspicious) {
+                // If we have a suspicious cover and found nothing better, 
+                // just keep it but stop the refresh loop by ensuring it's in the cache.
+            }
+            updateTrackMetadataCache(fileInfo, m_metadata);
+        }
         return;
     }
 
-    // If no cache, do basic initialization only
-    initializeBasicMetadata();
-
-    // Load cover art (the main visual part)
-    m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
-    if (m_metadata.coverArt.isNull())
-        m_metadata.coverArt = defaultCoverImage();
-
-#ifdef MUSICPLAYER_HAS_FFMPEG
-    // Load FFmpeg metadata (title, artist, etc.) — always prefer real tags over filename guesses
-    TrackMetadata probe;
-    probe.filePath = m_metadata.filePath;
-    applyFfmpegMetadata(m_metadata.filePath, probe);
-    if (!probe.title.isEmpty()) m_metadata.title = probe.title;
-    if (!probe.artist.isEmpty()) m_metadata.artist = probe.artist;
-    if (!probe.album.isEmpty()) m_metadata.album = probe.album;
-    if (!probe.genre.isEmpty()) m_metadata.genre = probe.genre;
-    if (!probe.year.isEmpty()) m_metadata.year = probe.year;
-    if (probe.trackNumber > 0) m_metadata.trackNumber = probe.trackNumber;
-    if (probe.sampleRate > 0) m_metadata.sampleRate = probe.sampleRate;
-    if (probe.bitrate > 0) m_metadata.bitrate = probe.bitrate;
-    if (probe.duration > 0) m_metadata.duration = probe.duration;
-    if (!probe.coverArt.isNull()
-        && (m_metadata.coverArt.isNull()
-            || isDefaultCoverImage(m_metadata.coverArt)
-            || isSuspiciousCoverImage(m_metadata.coverArt))) {
-        m_metadata.coverArt = probe.coverArt;
-    }
-#endif
-
-    // Handle format-specific duration
-    QString suffix = fileInfo.suffix().toLower();
-    if (suffix == "flac" && m_metadata.duration <= 0) {
-        int sr = 0; QString yr; qint64 dur = 0;
-        readFlacFileInfo(m_metadata.filePath, sr, yr, dur);
-        if (m_metadata.duration <= 0 && dur > 0) m_metadata.duration = dur;
-        if (m_metadata.sampleRate <= 0 && sr > 0) m_metadata.sampleRate = sr;
-    } else if (suffix == "mp3" && m_metadata.duration <= 0) {
-        qint64 dur = readMp3Duration(m_metadata.filePath);
-        if (m_metadata.duration <= 0 && dur > 0) m_metadata.duration = dur;
-    }
-
-    // Cache for future
-    updateTrackMetadataCache(fileInfo, m_metadata);
-
-    m_metadataLoaded = true;
+    // No cache: Perform a single, definitive load
+    loadMetadata();
 }
 
 bool TrackItem::isCoverPlaceholder() const
@@ -1440,7 +1515,7 @@ bool TrackItem::applyMetadataCover(const QImage &cover)
     if (cover.isNull() || isSuspiciousCoverImage(cover))
         return false;
 
-    m_metadata.coverArt = cover;
+    m_metadata.coverArt = makeSquareImage(cover);
     QFileInfo fileInfo(m_metadata.filePath);
     updateTrackMetadataCache(fileInfo, m_metadata);
     return true;
@@ -1460,130 +1535,79 @@ void TrackItem::initializeBasicMetadata()
 
 void TrackItem::loadMetadata()
 {
-    // ── NEW: CUE-track guard ──────────────────────────────────────────────
+    if (m_metadataLoaded) return;
+    
+    const QFileInfo fileInfo(m_metadata.filePath);
+    
+    // ── CUE-track guard ──────────────────────────────────────────────
     if (m_metadata.isCueTrack) {
-        const QString savedTitle    = m_metadata.title;
-        const QString savedArtist   = m_metadata.artist;
-        const QString savedAlbum    = m_metadata.album;
-        const QString savedGenre    = m_metadata.genre;
-        const QString savedYear     = m_metadata.year;
-        const int     savedTrackNum = m_metadata.trackNumber;
-        const qint64  savedStart    = m_metadata.cueStartMs;
-        const qint64  savedEnd      = m_metadata.cueEndMs;
-        const QString savedCueFile  = m_metadata.cueFilePath;
-        const qint64  savedDuration = m_metadata.duration;
-
-        m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
-        if (m_metadata.coverArt.isNull())
-            m_metadata.coverArt = defaultCoverImage();
-
-#ifdef MUSICPLAYER_HAS_FFMPEG
-        TrackMetadata probe;
-        probe.filePath = m_metadata.filePath;
-        applyFfmpegMetadata(m_metadata.filePath, probe);
-        if (m_metadata.sampleRate <= 0) m_metadata.sampleRate = probe.sampleRate;
-        if (m_metadata.bitrate    <= 0) m_metadata.bitrate    = probe.bitrate;
-#endif
-
-        m_metadata.title       = savedTitle;
-        m_metadata.artist      = savedArtist;
-        m_metadata.album       = savedAlbum;
-        m_metadata.genre       = savedGenre;
-        m_metadata.year        = savedYear;
-        m_metadata.trackNumber = savedTrackNum;
-        m_metadata.cueStartMs  = savedStart;
-        m_metadata.cueEndMs    = savedEnd;
-        m_metadata.cueFilePath = savedCueFile;
-        m_metadata.isCueTrack  = true;
-        m_metadata.duration    = savedDuration;
-
-        m_metadataLoaded = true;
-        return;
-    }
-    // ── END CUE guard ─────────────────────────────────────────────────────
-
-    QFileInfo fileInfo(m_metadata.filePath);
-    if (tryLoadTrackMetadataFromCache(fileInfo, m_metadata)) {
-        coverLog(m_metadata.filePath,
-                 QStringLiteral("loadMetadata: cache hit, cover=%1")
-                     .arg(describeImageForLog(m_metadata.coverArt)));
-
-        if (isDefaultCoverImage(m_metadata.coverArt) || isSuspiciousCoverImage(m_metadata.coverArt)) {
-            coverLog(m_metadata.filePath,
-                     QStringLiteral("loadMetadata: cache cover is default/suspicious, refreshing"));
-
-            const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
-            if (!refreshedCover.isNull() && !isDefaultCoverImage(refreshedCover)) {
-                m_metadata.coverArt = refreshedCover;
-                updateTrackMetadataCache(fileInfo, m_metadata);
-                coverLog(m_metadata.filePath,
-                         QStringLiteral("loadMetadata: cache refresh applied, cover=%1")
-                             .arg(describeImageForLog(m_metadata.coverArt)));
-            } else {
-                coverLog(m_metadata.filePath,
-                         QStringLiteral("loadMetadata: cache refresh failed, keeping previous cover"));
-            }
+        if (isDefaultCoverImage(m_metadata.coverArt)) {
+             m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
+             if (m_metadata.coverArt.isNull())
+                 m_metadata.coverArt = defaultCoverImage();
         }
         m_metadataLoaded = true;
         return;
     }
 
-    coverLog(m_metadata.filePath, QStringLiteral("loadMetadata: cache miss"));
-
-    initializeBasicMetadata();
-    m_metadata.coverArt = extractCoverArt(m_metadata.filePath);
-    coverLog(m_metadata.filePath,
-             QStringLiteral("loadMetadata: after extractCoverArt cover=%1")
-                 .arg(describeImageForLog(m_metadata.coverArt)));
+    // Default to filename-based data immediately so we NEVER stay in "Loading" state
+    const QString baseName = fileInfo.completeBaseName();
+    m_metadata.title = baseName;
+    m_metadata.artist = "Unknown Artist";
+    m_metadata.album = "Unknown Album";
+    m_metadata.coverArt = defaultCoverImage();
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
-    applyFfmpegMetadata(m_metadata.filePath, m_metadata);
+    TrackMetadata probe;
+    probe.filePath = m_metadata.filePath;
+    applyFfmpegMetadata(m_metadata.filePath, probe);
+    
+    if (!probe.title.isEmpty()) m_metadata.title = probe.title;
+    if (!probe.artist.isEmpty()) m_metadata.artist = probe.artist;
+    if (!probe.album.isEmpty()) m_metadata.album = probe.album;
+    if (!probe.genre.isEmpty()) m_metadata.genre = probe.genre;
+    if (!probe.year.isEmpty()) m_metadata.year = probe.year;
+    if (probe.trackNumber > 0) m_metadata.trackNumber = probe.trackNumber;
+    if (probe.sampleRate > 0) m_metadata.sampleRate = probe.sampleRate;
+    if (probe.bitrate > 0) m_metadata.bitrate = probe.bitrate;
+    if (probe.duration > 0) m_metadata.duration = probe.duration;
+    
+    if (!probe.coverArt.isNull() && !isSuspiciousCoverImage(probe.coverArt)) {
+        m_metadata.coverArt = probe.coverArt;
+    } else {
+        QImage art = extractCoverArt(m_metadata.filePath);
+        if (!art.isNull()) m_metadata.coverArt = art;
+    }
+#else
+    QImage art = extractCoverArt(m_metadata.filePath);
+    if (!art.isNull()) m_metadata.coverArt = art;
 #endif
+
+    if (m_metadata.coverArt.isNull())
+        m_metadata.coverArt = defaultCoverImage();
 
     QString suffix = fileInfo.suffix().toLower();
-    if (suffix == "flac") {
+    if (suffix == "flac" && m_metadata.duration <= 0) {
         int sr = 0; QString yr; qint64 dur = 0;
         readFlacFileInfo(m_metadata.filePath, sr, yr, dur);
-        if (m_metadata.sampleRate <= 0 && sr > 0) m_metadata.sampleRate = sr;
-        if (m_metadata.year.isEmpty() && !yr.isEmpty()) m_metadata.year = yr;
-        if (m_metadata.duration <= 0 && dur > 0) m_metadata.duration = dur;
-    } else if (suffix == "mp3") {
+        if (dur > 0) m_metadata.duration = dur;
+        if (sr > 0) m_metadata.sampleRate = sr;
+    } else if (suffix == "mp3" && m_metadata.duration <= 0) {
         qint64 dur = readMp3Duration(m_metadata.filePath);
-        if (m_metadata.duration <= 0 && dur > 0) m_metadata.duration = dur;
+        if (dur > 0) m_metadata.duration = dur;
     }
 
-    // Fallback: if no real tags were found, try to guess from filename
-    if (m_metadata.artist.isEmpty() && m_metadata.title == fileInfo.completeBaseName()) {
-        const QString fileName = fileInfo.completeBaseName();
-        const QStringList parts = fileName.split(" - ");
+    // Guess tags from filename if still unknown
+    if (m_metadata.artist == "Unknown Artist") {
+        const QStringList parts = baseName.split(" - ");
         if (parts.size() >= 2) {
-            if (parts.size() >= 3) {
-                bool ok = false;
-                const int trackNum = parts[0].trimmed().toInt(&ok);
-                if (ok) {
-                    if (m_metadata.trackNumber <= 0) m_metadata.trackNumber = trackNum;
-                    m_metadata.artist = parts[1].trimmed();
-                    m_metadata.title = parts[2].trimmed();
-                } else {
-                    m_metadata.artist = parts[0].trimmed();
-                    m_metadata.title = parts[1].trimmed();
-                }
-            } else {
-                m_metadata.artist = parts[0].trimmed();
-                m_metadata.title = parts[1].trimmed();
-            }
-        } else {
-            m_metadata.artist = "Unknown Artist";
+            m_metadata.artist = parts[0].trimmed();
+            m_metadata.title = parts[1].trimmed();
         }
-    } else if (m_metadata.artist.isEmpty()) {
-        m_metadata.artist = "Unknown Artist";
     }
 
-    updateTrackMetadataCache(fileInfo, m_metadata);
-    coverLog(m_metadata.filePath,
-             QStringLiteral("loadMetadata: completed, cover=%1")
-                 .arg(describeImageForLog(m_metadata.coverArt)));
     m_metadataLoaded = true;
+    updateTrackMetadataCache(fileInfo, m_metadata);
 }
 
 void TrackItem::loadFullMetadata(const QMediaMetaData &metaData)
@@ -1889,102 +1913,109 @@ QImage TrackItem::extractCoverArt(const QString &filePath)
              QStringLiteral("extractCoverArt: begin, suffix=%1")
                  .arg(fileInfo.suffix().toLower()));
 
+    QImage result;
+
     if (isFlac) {
         QImage flacCover = extractFlacPictureCover(filePath);
         if (!flacCover.isNull() && !isSuspiciousCoverImage(flacCover)) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: using FLAC native picture block cover, %1")
                          .arg(describeImageForLog(flacCover)));
-            return flacCover;
-        }
-        
-        QImage flacId3Cover = extractMp3Id3ApicCover(filePath);
-        if (!flacId3Cover.isNull() && !isSuspiciousCoverImage(flacId3Cover)) {
-            coverLog(filePath,
-                     QStringLiteral("extractCoverArt: using ID3 APIC cover for FLAC, %1")
-                         .arg(describeImageForLog(flacId3Cover)));
-            return flacId3Cover;
-        }
-    }
-
-    QStringList coverNames = {
-        "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png",
-        "album.jpg", "album.png", "artwork.jpg", "front.jpg", "Cover.jpg",
-        "Folder.jpg", "Album.jpg", "Front.jpg", "COVER.JPG", "FOLDER.JPG"
-    };
-
-    QImage folderCoverFallback;
-    QString folderCoverFallbackPath;
-
-    for (const QString &coverName : coverNames) {
-        QString coverPath = dirPath + "/" + coverName;
-        if (QFile::exists(coverPath)) {
-            QImage img(coverPath);
-            if (!img.isNull()) {
-                if (isSuspiciousCoverImage(img)) {
-                    coverLog(filePath,
-                             QStringLiteral("extractCoverArt: folder image rejected as suspicious -> %1, %2")
-                                 .arg(QDir::toNativeSeparators(coverPath))
-                                 .arg(describeImageForLog(img)));
-                    continue;
-                }
-
-                if (isMp3) {
-                    folderCoverFallback = img;
-                    folderCoverFallbackPath = coverPath;
-                    coverLog(filePath,
-                             QStringLiteral("extractCoverArt: folder image candidate for MP3 fallback -> %1")
-                                 .arg(QDir::toNativeSeparators(coverPath)));
-                    break;
-                }
-
+            result = flacCover;
+        } else {
+            // Fallback for FLAC with ID3
+            QImage flacId3Cover = extractMp3Id3ApicCover(filePath);
+            if (!flacId3Cover.isNull() && !isSuspiciousCoverImage(flacId3Cover)) {
                 coverLog(filePath,
-                         QStringLiteral("extractCoverArt: folder image used -> %1")
-                             .arg(QDir::toNativeSeparators(coverPath)));
-                return img;
+                         QStringLiteral("extractCoverArt: using ID3 APIC cover for FLAC, %1")
+                             .arg(describeImageForLog(flacId3Cover)));
+                result = flacId3Cover;
             }
         }
     }
 
-#ifdef MUSICPLAYER_HAS_FFMPEG
-    QImage embeddedCover = extractEmbeddedCoverArt(filePath);
-    if (!embeddedCover.isNull() && !isSuspiciousCoverImage(embeddedCover)) {
-        coverLog(filePath,
-                 QStringLiteral("extractCoverArt: using embedded FFmpeg cover, %1")
-                     .arg(describeImageForLog(embeddedCover)));
-        return embeddedCover;
+    if (result.isNull()) {
+        QStringList coverNames = {
+            "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png",
+            "album.jpg", "album.png", "artwork.jpg", "front.jpg", "Cover.jpg",
+            "Folder.jpg", "Album.jpg", "Front.jpg", "COVER.JPG", "FOLDER.JPG"
+        };
+
+        QImage folderCoverFallback;
+        QString folderCoverFallbackPath;
+
+        for (const QString &coverName : coverNames) {
+            QString coverPath = dirPath + "/" + coverName;
+            if (QFile::exists(coverPath)) {
+                QImage img(coverPath);
+                if (!img.isNull()) {
+                    if (isSuspiciousCoverImage(img)) {
+                        coverLog(filePath,
+                                 QStringLiteral("extractCoverArt: folder image rejected as suspicious -> %1, %2")
+                                     .arg(QDir::toNativeSeparators(coverPath))
+                                     .arg(describeImageForLog(img)));
+                        continue;
+                    }
+
+                    if (isMp3) {
+                        folderCoverFallback = img;
+                        folderCoverFallbackPath = coverPath;
+                        coverLog(filePath,
+                                 QStringLiteral("extractCoverArt: folder image candidate for MP3 fallback -> %1")
+                                     .arg(QDir::toNativeSeparators(coverPath)));
+                        break;
+                    }
+
+                    coverLog(filePath,
+                             QStringLiteral("extractCoverArt: folder image used -> %1")
+                                 .arg(QDir::toNativeSeparators(coverPath)));
+                    result = img;
+                    break;
+                }
+            }
+        }
+
+        if (result.isNull() && !folderCoverFallback.isNull()) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: using MP3 folder fallback -> %1, %2")
+                         .arg(QDir::toNativeSeparators(folderCoverFallbackPath))
+                         .arg(describeImageForLog(folderCoverFallback)));
+            result = folderCoverFallback;
+        }
     }
 
-    if (!embeddedCover.isNull() && isSuspiciousCoverImage(embeddedCover)) {
-        coverLog(filePath,
-                 QStringLiteral("extractCoverArt: embedded FFmpeg cover rejected as suspicious, %1")
-                     .arg(describeImageForLog(embeddedCover)));
+#ifdef MUSICPLAYER_HAS_FFMPEG
+    if (result.isNull()) {
+        QImage embeddedCover = extractEmbeddedCoverArt(filePath);
+        if (!embeddedCover.isNull() && !isSuspiciousCoverImage(embeddedCover)) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: using embedded FFmpeg cover, %1")
+                         .arg(describeImageForLog(embeddedCover)));
+            result = embeddedCover;
+        } else if (!embeddedCover.isNull() && isSuspiciousCoverImage(embeddedCover)) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: embedded FFmpeg cover rejected as suspicious, %1")
+                         .arg(describeImageForLog(embeddedCover)));
+        }
     }
 #endif
 
-    if (isMp3) {
+    if (result.isNull() && isMp3) {
         QImage mp3Cover = extractMp3Id3ApicCover(filePath);
         if (!mp3Cover.isNull() && !isSuspiciousCoverImage(mp3Cover)) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: using MP3 ID3 cover, %1")
                          .arg(describeImageForLog(mp3Cover)));
-            return mp3Cover;
-        }
-
-        if (!mp3Cover.isNull() && isSuspiciousCoverImage(mp3Cover)) {
+            result = mp3Cover;
+        } else if (!mp3Cover.isNull() && isSuspiciousCoverImage(mp3Cover)) {
             coverLog(filePath,
                      QStringLiteral("extractCoverArt: MP3 ID3 cover rejected as suspicious, %1")
                          .arg(describeImageForLog(mp3Cover)));
         }
-
-        if (!folderCoverFallback.isNull()) {
-            coverLog(filePath,
-                     QStringLiteral("extractCoverArt: using MP3 folder fallback -> %1, %2")
-                         .arg(QDir::toNativeSeparators(folderCoverFallbackPath))
-                         .arg(describeImageForLog(folderCoverFallback)));
-            return folderCoverFallback;
-        }
     }
+
+    if (!result.isNull())
+        return makeSquareImage(result);
 
     coverLog(filePath, QStringLiteral("extractCoverArt: fallback to default cover"));
     return defaultCoverImage();
@@ -2027,7 +2058,7 @@ TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QImage &sharedCover
     item->m_metadata.cueFilePath = ct.cueFilePath;
     item->m_metadata.isCueTrack  = true;
     item->m_metadata.duration    = (ct.endMs >= 0) ? (ct.endMs - ct.startMs) : 0;
-    item->m_metadata.coverArt    = sharedCover.isNull() ? defaultCoverImage() : sharedCover;
+    item->m_metadata.coverArt    = sharedCover.isNull() ? defaultCoverImage() : makeSquareImage(sharedCover);
     item->m_metadataLoaded       = true;
 
     return item;
