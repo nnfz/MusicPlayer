@@ -96,6 +96,8 @@ signals:
     void decoderChanged();
     void outputDeviceChanged();
     void playbackRateChanged(float rate);
+    void currentAudioLevel(float level);
+    void bassLevel(float level);
 
 private slots:
     void onDecoderBufferReady(const QAudioBuffer &buffer);

@@ -79,6 +79,7 @@ public:
     void updateLikeState(bool liked);
     void updateShuffleState(bool enabled, int mode);
     void updateRepeatState(int mode);
+    void updateBassLevel(float level);
 
     bool isOpen() const { return m_isOpen; }
 
@@ -143,6 +144,7 @@ private:
     bool                   m_userSeeking  { false };
     bool                   m_isOpen       { false };
     int                    m_volumeValue  { 0 };
+    float                  m_lastLevel    { 0.0f };
 
     QVector<QColor>        m_palette;
     QImage                 m_noiseFrame;

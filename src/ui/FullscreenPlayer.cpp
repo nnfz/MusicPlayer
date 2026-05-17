@@ -19,93 +19,7 @@
 #include <QVector>
 #include <algorithm>
 #include <cmath>
-
-// ══════════════════════════════════════════════════════════════════════
-//  Noise utilities — gradient noise, no integer artifacts
-// ══════════════════════════════════════════════════════════════════════
-
-static inline float _mix(float a, float b, float t) { return a + (b-a)*t; }
-static inline float _fade(float t) { return t*t*t*(t*(t*6.f-15.f)+10.f); }
-
-// быстрый целочисленный hash → индекс градиента
-static inline int _ihash(int x, int y) {
-    unsigned h = (unsigned)(x * 1619 + y * 31337);
-    h ^= h >> 16;
-    h *= 0x45d9f3bu;
-    h ^= h >> 16;
-    return (int)(h & 0x7);
-}
-
-// 8 равномерно распределённых градиентов
-static const float _GX[8] = { 1.f, 1.f, 0.f,-1.f,-1.f,-1.f, 0.f, 1.f };
-static const float _GY[8] = { 0.f, 1.f, 1.f, 1.f, 0.f,-1.f,-1.f,-1.f };
-
-static float gnoise(float x, float y) {
-    int   ix = (int)floorf(x), iy = (int)floorf(y);
-    float fx = x - ix,         fy = y - iy;
-    float ux = _fade(fx),      uy = _fade(fy);
-
-    int i00 = _ihash(ix,   iy  ), i10 = _ihash(ix+1, iy  );
-    int i01 = _ihash(ix,   iy+1), i11 = _ihash(ix+1, iy+1);
-
-    float v00 = _GX[i00]*fx       + _GY[i00]*fy;
-    float v10 = _GX[i10]*(fx-1.f) + _GY[i10]*fy;
-    float v01 = _GX[i01]*fx       + _GY[i01]*(fy-1.f);
-    float v11 = _GX[i11]*(fx-1.f) + _GY[i11]*(fy-1.f);
-
-    return _mix(_mix(v00,v10,ux), _mix(v01,v11,ux), uy) * 0.5f + 0.5f;
-}
-
-// 3 октавы — мягко, без мелких деталей
-static float fbm(float x, float y, float t) {
-    float ox = t * 0.18f;
-    float oy = t * 0.11f;
-    return gnoise(x + ox, y + oy);
-}
-
-static void boxBlurRgb(QImage &img, int radius)
-{
-    if (radius <= 0 || img.isNull())
-        return;
-
-    const int w = img.width();
-    const int h = img.height();
-    if (w <= 0 || h <= 0)
-        return;
-
-    QImage temp(w, h, QImage::Format_RGB32);
-
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int r = 0, g = 0, b = 0, count = 0;
-            for (int k = -radius; k <= radius; ++k) {
-                const int sx = qBound(0, x + k, w - 1);
-                const QRgb px = img.pixel(sx, y);
-                r += qRed(px);
-                g += qGreen(px);
-                b += qBlue(px);
-                ++count;
-            }
-            temp.setPixel(x, y, qRgb(r / count, g / count, b / count));
-        }
-    }
-
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int r = 0, g = 0, b = 0, count = 0;
-            for (int k = -radius; k <= radius; ++k) {
-                const int sy = qBound(0, y + k, h - 1);
-                const QRgb px = temp.pixel(x, sy);
-                r += qRed(px);
-                g += qGreen(px);
-                b += qBlue(px);
-                ++count;
-            }
-            img.setPixel(x, y, qRgb(r / count, g / count, b / count));
-        }
-    }
-}
-
+#include <QDateTime>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -156,6 +70,12 @@ public:
         update();
     }
 
+    void setBeat(float b)
+    {
+        m_beat = b;
+        update();
+    }
+
 protected:
     void initializeGL() override
     {
@@ -183,6 +103,7 @@ protected:
             "uniform vec3 u_color1;\n"
             "uniform vec3 u_color2;\n"
             "uniform float u_time;\n"
+            "uniform float u_beat;\n"
             "float hash(vec2 p) {\n"
             "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
             "}\n"
@@ -196,48 +117,20 @@ protected:
             "  vec2 u = f * f * (3.0 - 2.0 * f);\n"
             "  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;\n"
             "}\n"
-            "float noiseBlur(vec2 p) {\n"
-            "  vec2 o = vec2(0.008, 0.008);\n"
-            "  float n = 0.0;\n"
-            "  n += noise(p);\n"
-            "  n += noise(p + vec2(o.x, 0.0));\n"
-            "  n += noise(p - vec2(o.x, 0.0));\n"
-            "  n += noise(p + vec2(0.0, o.y));\n"
-            "  n += noise(p - vec2(0.0, o.y));\n"
-            "  return n * 0.2;\n"
-            "}\n"
-            "vec3 pickColor(int idx, vec3 c0, vec3 c1, vec3 c2) {\n"
-            "  return idx == 0 ? c0 : (idx == 1 ? c1 : c2);\n"
-            "}\n"
             "void main() {\n"
-            "  vec2 p = v_uv * 1.6;\n"
-            "  float t = u_time;\n"
-            "  float n0 = noiseBlur(p + vec2(0.0, 0.0) + vec2(t * 0.10, t * 0.08));\n"
-            "  float n1 = noiseBlur(p + vec2(4.6, 2.3) + vec2(-t * 0.07, t * 0.06));\n"
-            "  float n2 = noiseBlur(p + vec2(8.4, 5.1) + vec2(t * 0.05, -t * 0.04));\n"
-            "  n0 = n0 * n0 * (3.0 - 2.0 * n0);\n"
-            "  n1 = n1 * n1 * (3.0 - 2.0 * n1);\n"
-            "  n2 = n2 * n2 * (3.0 - 2.0 * n2);\n"
-            "  float w0 = pow(n0, 2.2);\n"
-            "  float w1 = pow(n1, 2.2);\n"
-            "  float w2 = pow(n2, 2.2);\n"
-            "  int maxIdx = 0;\n"
-            "  int secondIdx = 1;\n"
-            "  if (w1 > w0) { maxIdx = 1; secondIdx = 0; }\n"
-            "  if (w2 > (maxIdx == 0 ? w0 : w1)) { secondIdx = maxIdx; maxIdx = 2; }\n"
-            "  else if (w2 > (secondIdx == 0 ? w0 : w1)) { secondIdx = 2; }\n"
-            "  float wa = (maxIdx == 0 ? w0 : (maxIdx == 1 ? w1 : w2));\n"
-            "  float wb = (secondIdx == 0 ? w0 : (secondIdx == 1 ? w1 : w2));\n"
-            "  float sum = wa + wb;\n"
-            "  if (sum < 0.0001) sum = 1.0;\n"
-            "  vec3 c0 = u_color0;\n"
-            "  vec3 c1 = u_color1;\n"
-            "  vec3 c2 = u_color2;\n"
-            "  vec3 a = pickColor(maxIdx, c0, c1, c2);\n"
-            "  vec3 b = pickColor(secondIdx, c0, c1, c2);\n"
-            "  vec3 col = (a * wa + b * wb) / sum;\n"
-            "  col *= 0.78;\n"
-            "  fragColor = vec4(col, 1.0);\n"
+            "  vec2 p = v_uv * 1.5;\n"
+            "  float t = u_time * 0.12;\n"
+            "  float n0 = noise(p + vec2(t * 0.8, t));\n"
+            "  float n1 = noise(p * 1.3 + vec2(-t, t * 1.1) + 5.2);\n"
+            "  float n2 = noise(p * 0.7 + vec2(t * 1.2, -t * 0.9) + 8.7);\n"
+            "  float w0 = pow(n0, 4.0);\n"
+            "  float w1 = pow(n1, 4.0);\n"
+            "  float w2 = pow(n2, 4.0);\n"
+            "  float sum = w0 + w1 + w2;\n"
+            "  if (sum < 0.001) { w0 = 1.0; sum = 1.0; }\n"
+            "  vec3 col = (u_color0 * w0 + u_color1 * w1 + u_color2 * w2) / sum;\n"
+            "  float dither = (hash(v_uv + fract(u_time)) - 0.5) / 128.0;\n"
+            "  fragColor = vec4(col * 0.6 + dither, 1.0);\n"
             "}\n";
 
         m_program.addShaderFromSourceCode(QOpenGLShader::Vertex, kVert);
@@ -260,6 +153,7 @@ protected:
 
         m_program.bind();
         m_program.setUniformValue("u_time", m_time);
+        m_program.setUniformValue("u_beat", m_beat);
         m_program.setUniformValue("u_color0", colors[0].redF(), colors[0].greenF(), colors[0].blueF());
         m_program.setUniformValue("u_color1", colors[1].redF(), colors[1].greenF(), colors[1].blueF());
         m_program.setUniformValue("u_color2", colors[2].redF(), colors[2].greenF(), colors[2].blueF());
@@ -271,8 +165,8 @@ private:
     QOpenGLShaderProgram m_program;
     QVector<QColor> m_palette;
     float m_time = 0.0f;
+    float m_beat = 0.0f;
 };
-
 
 // ---------------------------------------------------------------------------
 // MarqueeLabel
@@ -280,102 +174,61 @@ private:
 
 MarqueeLabel::MarqueeLabel(QWidget *parent) : QWidget(parent)
 {
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    setAttribute(Qt::WA_TranslucentBackground);
+    m_anim = new QPropertyAnimation(this, "scrollOffset", this);
 }
 
 void MarqueeLabel::setText(const QString &text)
 {
+    if (m_text == text) return;
     m_text = text;
-    QFontMetrics fm(m_font);
-    m_textW = fm.horizontalAdvance(m_text);
-    if (m_anim) { m_anim->stop(); m_anim->deleteLater(); m_anim = nullptr; }
     m_offset = 0;
-    updateGeometry();
-    update();
+    m_anim->stop();
+    m_textW = fontMetrics().horizontalAdvance(m_text);
     restartScroll();
 }
 
 void MarqueeLabel::setTextStyle(const QFont &font, const QColor &color)
 {
-    m_font  = font;
+    m_font = font;
     m_color = color;
-    QFontMetrics fm(m_font);
-    m_textW = fm.horizontalAdvance(m_text);
-    update();
+    m_textW = QFontMetrics(m_font).horizontalAdvance(m_text);
     restartScroll();
 }
 
-QSize MarqueeLabel::sizeHint() const
-{
-    QFontMetrics fm(m_font);
-    return { width() > 0 ? width() : qMin(m_textW, 400), fm.height() + 4 };
-}
-
+QSize MarqueeLabel::sizeHint() const { return {200, QFontMetrics(m_font).height() + 4}; }
 QSize MarqueeLabel::minimumSizeHint() const { return sizeHint(); }
-
-void MarqueeLabel::resizeEvent(QResizeEvent *e)
-{
-    QWidget::resizeEvent(e);
-    restartScroll();
-}
 
 void MarqueeLabel::restartScroll()
 {
-    if (m_anim) { m_anim->stop(); m_anim->deleteLater(); m_anim = nullptr; }
+    m_anim->stop();
     m_offset = 0;
-    update();
-    if (m_textW <= width()) return;
+    if (m_textW <= width()) { update(); return; }
 
-    int travel = m_textW + kGap;
-    int ms = travel * 1000 / kSpeed;
-
-    m_anim = new QPropertyAnimation(this, "scrollOffset", this);
+    int dist = m_textW + kGap;
+    m_anim->setDuration(dist * 1000 / kSpeed);
     m_anim->setStartValue(0);
-    m_anim->setEndValue(-travel);
-    m_anim->setDuration(ms);
-    m_anim->setEasingCurve(QEasingCurve::Linear);
+    m_anim->setEndValue(dist);
     m_anim->setLoopCount(-1);
-
-    QTimer::singleShot(1500, this, [this] { if (m_anim) m_anim->start(); });
+    m_anim->start();
 }
+
+void MarqueeLabel::resizeEvent(QResizeEvent *e) { QWidget::resizeEvent(e); restartScroll(); }
 
 void MarqueeLabel::paintEvent(QPaintEvent *)
 {
-    const int w = width(), h = height();
-    if (w <= 0 || h <= 0) return;
-    const bool scrolling = m_textW > w;
-
-    QPixmap buf(w, h);
-    buf.fill(Qt::transparent);
-    {
-        QPainter p(&buf);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setFont(m_font);
-        QFontMetrics fm(m_font);
-        int y = (h + fm.ascent() - fm.descent()) / 2;
-
-        p.setPen(m_color);
-        if (scrolling) {
-            p.drawText(m_offset, y, m_text);
-            p.drawText(m_offset + m_textW + kGap, y, m_text);
-
-            p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            QLinearGradient gl(0, 0, kFade, 0);
-            gl.setColorAt(0, Qt::transparent); gl.setColorAt(1, Qt::white);
-            p.fillRect(0, 0, kFade, h, gl);
-
-            QLinearGradient gr(w - kFade, 0, w, 0);
-            gr.setColorAt(0, Qt::white); gr.setColorAt(1, Qt::transparent);
-            p.fillRect(w - kFade, 0, kFade, h, gr);
-        } else {
-            p.drawText(0, y, m_text);
-        }
-    }
-
     QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
     p.setOpacity(m_opacity);
-    p.drawPixmap(0, 0, buf);
+    p.setFont(m_font);
+    p.setPen(m_color);
+
+    if (m_textW <= width()) {
+        p.drawText(rect(), Qt::AlignCenter, m_text);
+    } else {
+        int dist = m_textW + kGap;
+        p.drawText(rect().translated(-m_offset, 0), Qt::AlignLeft | Qt::AlignVCenter, m_text);
+        p.drawText(rect().translated(-m_offset + dist, 0), Qt::AlignLeft | Qt::AlignVCenter, m_text);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,74 +301,47 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
         m_currentTime->setText(fmt(v));
     });
 
-    QString ctrlSS = "QPushButton{background:transparent;border:none;color:rgba(255,255,255,200);font-size:20px;padding:4px 14px}QPushButton:hover{color:white}";
-    QString playSS = "QPushButton{background:transparent;border:none;color:white;font-size:36px;padding:4px 18px}QPushButton:hover{color:#0078d7}";
+    auto btn = [&](const QString &txt, int sz) {
+        auto *b = new QPushButton(txt, m_card);
+        b->setStyleSheet(QString("QPushButton{background:transparent;border:none;color:rgba(255,255,255,200);font-size:%1px;padding:4px 14px}QPushButton:hover{color:white}").arg(sz));
+        b->setCursor(Qt::PointingHandCursor);
+        return b;
+    };
 
-    m_shuffleBtn = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x80"), m_card);
-    m_shuffleBtn->setStyleSheet(ctrlSS); m_shuffleBtn->setCursor(Qt::PointingHandCursor);
-
-    m_prevBtn = new QPushButton(QString::fromUtf8("\xE2\x8F\xAE"), m_card);
-    m_prevBtn->setStyleSheet(ctrlSS); m_prevBtn->setCursor(Qt::PointingHandCursor);
-
-    m_playBtn = new QPushButton(QString::fromUtf8("\xE2\x96\xB6"), m_card);
-    m_playBtn->setStyleSheet(playSS); m_playBtn->setCursor(Qt::PointingHandCursor);
-
-    m_nextBtn = new QPushButton(QString::fromUtf8("\xE2\x8F\xAD"), m_card);
-    m_nextBtn->setStyleSheet(ctrlSS); m_nextBtn->setCursor(Qt::PointingHandCursor);
-
-    m_repeatBtn = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x81"), m_card);
-    m_repeatBtn->setStyleSheet(ctrlSS); m_repeatBtn->setCursor(Qt::PointingHandCursor);
-
-    m_likeBtn = new QPushButton(QString::fromUtf8("\xE2\x99\xA1"), m_card);
-    m_likeBtn->setStyleSheet(ctrlSS); m_likeBtn->setCursor(Qt::PointingHandCursor);
-
-    m_textBtn = new QPushButton(QStringLiteral("T"), m_card);
-    m_textBtn->setStyleSheet(ctrlSS); m_textBtn->setCursor(Qt::PointingHandCursor);
-    m_textBtn->setToolTip(QStringLiteral("Lyrics coming soon"));
-    connect(m_textBtn, &QPushButton::clicked, this, [this]() {
-        m_textBtn->setText(QStringLiteral("...") );
-        QTimer::singleShot(900, this, [this]() {
-            if (m_textBtn)
-                m_textBtn->setText(QStringLiteral("T"));
-        });
-    });
-
-    connect(m_shuffleBtn, &QPushButton::clicked, this, &FullscreenPlayer::shuffleToggleRequested);
-    connect(m_prevBtn, &QPushButton::clicked, this, &FullscreenPlayer::previousRequested);
-    connect(m_playBtn, &QPushButton::clicked, this, &FullscreenPlayer::playPauseRequested);
-    connect(m_nextBtn, &QPushButton::clicked, this, &FullscreenPlayer::nextRequested);
-    connect(m_repeatBtn, &QPushButton::clicked, this, &FullscreenPlayer::repeatToggleRequested);
-    connect(m_likeBtn, &QPushButton::clicked, this, &FullscreenPlayer::likeToggleRequested);
-
-    m_closeBtn = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"), m_card);
-    m_closeBtn->setStyleSheet(
-        "QPushButton{background:transparent;border:none;color:rgba(255,255,255,140);font-size:20px;padding:4px 14px}"
-        "QPushButton:hover{color:white}");
-    m_closeBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_closeBtn, &QPushButton::clicked, this, &FullscreenPlayer::closeOverlay);
-
-    m_muteBtn = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x8A"), m_card);
-    m_muteBtn->setStyleSheet(ctrlSS); m_muteBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_muteBtn, &QPushButton::clicked, this, &FullscreenPlayer::muteToggleRequested);
+    m_shuffleBtn = btn(QString::fromUtf8("\xF0\x9F\x94\x80"), 20);
+    m_prevBtn    = btn(QString::fromUtf8("\xE2\x8F\xAE"), 24);
+    m_playBtn    = btn(QString::fromUtf8("\xE2\x96\xB6"), 32);
+    m_nextBtn    = btn(QString::fromUtf8("\xE2\x8F\xAD"), 24);
+    m_repeatBtn  = btn(QString::fromUtf8("\xF0\x9F\x94\x81"), 20);
+    m_likeBtn    = btn(QString::fromUtf8("\xE2\x99\xA1"), 20);
+    m_textBtn    = btn(QString::fromUtf8("\xF0\x9F\x93\x9D"), 20);
+    m_closeBtn   = btn(QString::fromUtf8("\xE2\x9C\x95"), 18);
+    m_muteBtn    = btn(QString::fromUtf8("\xF0\x9F\x94\x8A"), 18);
 
     m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_card);
     m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setFixedWidth(130);
+    m_volumeSlider->setFixedWidth(100);
     m_volumeSlider->setStyleSheet(sliderSS);
     m_volumeSlider->setCursor(Qt::PointingHandCursor);
+
+    connect(m_shuffleBtn, &QPushButton::clicked, this, &FullscreenPlayer::shuffleToggleRequested);
+    connect(m_prevBtn,    &QPushButton::clicked, this, &FullscreenPlayer::previousRequested);
+    connect(m_playBtn,    &QPushButton::clicked, this, &FullscreenPlayer::playPauseRequested);
+    connect(m_nextBtn,    &QPushButton::clicked, this, &FullscreenPlayer::nextRequested);
+    connect(m_repeatBtn,  &QPushButton::clicked, this, &FullscreenPlayer::repeatToggleRequested);
+    connect(m_likeBtn,    &QPushButton::clicked, this, &FullscreenPlayer::likeToggleRequested);
+    connect(m_closeBtn,   &QPushButton::clicked, this, &FullscreenPlayer::closeOverlay);
+    connect(m_muteBtn,    &QPushButton::clicked, this, &FullscreenPlayer::muteToggleRequested);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &FullscreenPlayer::volumeChangeRequested);
 
     QVBoxLayout *cl = new QVBoxLayout(m_card);
-    cl->setSpacing(10); cl->setContentsMargins(10, 10, 10, 10); cl->setAlignment(Qt::AlignHCenter);
+    cl->setContentsMargins(0, 0, 0, 0); cl->setSpacing(0);
+    cl->addStretch();
+    cl->addWidget(m_coverLabel, 0, Qt::AlignCenter); cl->addSpacing(30);
+    cl->addWidget(m_titleLabel, 0, Qt::AlignCenter); cl->addSpacing(4);
+    cl->addWidget(m_artistLabel, 0, Qt::AlignCenter); cl->addSpacing(30);
 
-    auto addC = [&](QWidget *w) {
-        auto *r = new QHBoxLayout(); r->setAlignment(Qt::AlignHCenter); r->addWidget(w); cl->addLayout(r);
-    };
-
-    addC(m_coverLabel); cl->addSpacing(14);
-    addC(m_titleLabel); addC(m_artistLabel); cl->addSpacing(18);
-
-    auto *sr = new QHBoxLayout(); sr->setSpacing(8);
+    QHBoxLayout *sr = new QHBoxLayout(); sr->setContentsMargins(20, 0, 20, 0); sr->setSpacing(10);
     sr->addWidget(m_currentTime); sr->addWidget(m_seekSlider, 1); sr->addWidget(m_totalTime);
     cl->addLayout(sr); cl->addSpacing(6);
 
@@ -559,15 +385,12 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     m_seekSlider->setRange(0, durationMs); m_totalTime->setText(fmt(durationMs));
     updateCoverWidget(); updatePosition(positionMs); updatePlayState(isPlaying); updateVolume(volume);
     m_volumeSlider->blockSignals(true); m_volumeSlider->setValue(volume); m_volumeSlider->blockSignals(false);
-    m_muteBtn->setFocusPolicy(Qt::NoFocus);
-    m_closeBtn->setFocusPolicy(Qt::NoFocus);
-    m_shuffleBtn->setFocusPolicy(Qt::NoFocus);
-    m_repeatBtn->setFocusPolicy(Qt::NoFocus);
-    m_likeBtn->setFocusPolicy(Qt::NoFocus);
-    m_textBtn->setFocusPolicy(Qt::NoFocus);
-    m_prevBtn->setFocusPolicy(Qt::NoFocus);
-    m_playBtn->setFocusPolicy(Qt::NoFocus);
-    m_nextBtn->setFocusPolicy(Qt::NoFocus);
+    
+    for (auto *w : { (QWidget*)m_muteBtn, (QWidget*)m_closeBtn, (QWidget*)m_shuffleBtn, 
+                     (QWidget*)m_repeatBtn, (QWidget*)m_likeBtn, (QWidget*)m_textBtn, 
+                     (QWidget*)m_prevBtn, (QWidget*)m_playBtn, (QWidget*)m_nextBtn }) {
+        if (w) w->setFocusPolicy(Qt::NoFocus);
+    }
 
     extractPalette(m_rawCover);
     if (m_bgWidget)
@@ -578,45 +401,27 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     activateWindow();
     setFocus(Qt::ActiveWindowFocusReason);
     grabKeyboard();
-    update();
 
-    m_card->adjustSize();
     layoutCard();
     m_cardOpacity->setOpacity(0.0);
 
-    auto *oa = new QPropertyAnimation(m_cardOpacity, "opacity", this);
+    QPoint finalCardPos = m_card->pos();
+    QPoint startCardPos = finalCardPos + QPoint(0, 50);
+    m_card->move(startCardPos);
+
+    auto *group = new QParallelAnimationGroup(this);
+
+    auto *oa = new QPropertyAnimation(m_cardOpacity, "opacity", group);
     oa->setStartValue(0.0); oa->setEndValue(1.0);
-    oa->setDuration(400); oa->setEasingCurve(QEasingCurve::OutCubic);
-    oa->start(QAbstractAnimation::DeleteWhenStopped);
+    oa->setDuration(300); oa->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(oa);
 
-    auto slideIn = [&](QWidget *w, int skipMs) {
-        if (!w) return;
-        if (w->graphicsEffect()) { delete w->graphicsEffect(); }
-        if (auto *ml = qobject_cast<MarqueeLabel *>(w)) ml->setOpacity(1.0);
-        QPoint orig = w->pos();
-        w->move(orig.x() - 80, orig.y());
-        auto *pa = new QPropertyAnimation(w, "pos", this);
-        pa->setStartValue(w->pos()); pa->setEndValue(orig);
-        pa->setDuration(600); pa->setEasingCurve(QEasingCurve::OutCubic);
-        pa->start(QAbstractAnimation::DeleteWhenStopped);
-        pa->setCurrentTime(skipMs);
-    };
+    auto *pa = new QPropertyAnimation(m_card, "pos", group);
+    pa->setStartValue(startCardPos); pa->setEndValue(finalCardPos);
+    pa->setDuration(450); pa->setEasingCurve(QEasingCurve::OutBack);
+    group->addAnimation(pa);
 
-    slideIn(m_shuffleBtn,   300);
-    slideIn(m_prevBtn,      300);
-    slideIn(m_playBtn,      300);
-    slideIn(m_nextBtn,      300);
-    slideIn(m_repeatBtn,    300);
-    slideIn(m_likeBtn,      260);
-    slideIn(m_textBtn,      260);
-    slideIn(m_muteBtn,      300);
-    slideIn(m_volumeSlider, 300);
-    slideIn(m_closeBtn,     300);
-    slideIn(m_seekSlider,   300);
-    slideIn(m_titleLabel,   200);
-    slideIn(m_artistLabel,  170);
-    slideIn(m_coverLabel,   100);
-
+    group->start(QAbstractAnimation::DeleteWhenStopped);
     m_animTimer->start();
     m_isOpen = true;
 }
@@ -630,56 +435,26 @@ void FullscreenPlayer::closeOverlay()
     releaseKeyboard();
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
 
-    for (QWidget *w : {(QWidget *)m_coverLabel, (QWidget *)m_titleLabel, (QWidget *)m_artistLabel,
-                       (QWidget *)m_seekSlider, (QWidget *)m_shuffleBtn, (QWidget *)m_prevBtn,
-                       (QWidget *)m_playBtn, (QWidget *)m_nextBtn, (QWidget *)m_repeatBtn,
-                       (QWidget *)m_likeBtn, (QWidget *)m_textBtn, (QWidget *)m_muteBtn,
-                       (QWidget *)m_volumeSlider, (QWidget *)m_closeBtn}) {
-        if (!w) continue;
-        if (w->graphicsEffect()) w->setGraphicsEffect(nullptr);
-        if (auto *ml = qobject_cast<MarqueeLabel *>(w)) ml->setOpacity(1.0);
-    }
-    m_card->adjustSize();
-    layoutCard();
-
     m_closeAnim = new QParallelAnimationGroup(this);
-    auto *oa = new QPropertyAnimation(m_cardOpacity, "opacity", this);
+    
+    auto *oa = new QPropertyAnimation(m_cardOpacity, "opacity", m_closeAnim);
     oa->setStartValue(m_cardOpacity->opacity()); oa->setEndValue(0.0);
-    oa->setDuration(300); oa->setEasingCurve(QEasingCurve::InCubic);
+    oa->setDuration(250); oa->setEasingCurve(QEasingCurve::InQuad);
     m_closeAnim->addAnimation(oa);
-    m_closeAnim->start();
 
-    auto slideOut = [&](QWidget *w, int delayMs) {
-        if (!w) return;
-        QPoint orig = w->pos();
-        auto *pa = new QPropertyAnimation(w, "pos", this);
-        pa->setStartValue(orig); pa->setEndValue(QPoint(orig.x() + 24, orig.y()));
-        pa->setDuration(280); pa->setEasingCurve(QEasingCurve::InCubic);
-        QTimer::singleShot(delayMs, this, [pa] {
-            pa->start(QAbstractAnimation::DeleteWhenStopped);
-        });
-    };
-
-    slideOut(m_coverLabel,   0);
-    slideOut(m_titleLabel,   55);
-    slideOut(m_artistLabel,  75);
-    slideOut(m_shuffleBtn,   130);
-    slideOut(m_prevBtn,      130);
-    slideOut(m_playBtn,      130);
-    slideOut(m_nextBtn,      130);
-    slideOut(m_repeatBtn,    130);
-    slideOut(m_likeBtn,      145);
-    slideOut(m_textBtn,      145);
-    slideOut(m_muteBtn,      130);
-    slideOut(m_seekSlider,   130);
-    slideOut(m_volumeSlider, 130);
-    slideOut(m_closeBtn,     130);
+    auto *pa = new QPropertyAnimation(m_card, "pos", m_closeAnim);
+    pa->setStartValue(m_card->pos()); 
+    pa->setEndValue(m_card->pos() + QPoint(0, 30));
+    pa->setDuration(250); pa->setEasingCurve(QEasingCurve::InQuad);
+    m_closeAnim->addAnimation(pa);
 
     connect(m_closeAnim, &QParallelAnimationGroup::finished, this, [this] {
         hide();
         clearFocus();
+        m_animTimer->stop();
         delete m_closeAnim; m_closeAnim = nullptr;
     });
+    m_closeAnim->start();
 }
 
 // ---------------------------------------------------------------------------
@@ -767,8 +542,6 @@ void FullscreenPlayer::updateRepeatState(int mode)
     }
 }
 
-// ---------------------------------------------------------------------------
-
 void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
 {
     m_palette.clear();
@@ -818,6 +591,7 @@ void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
     for (const Bin &bin : bins) {
         if (bin.count <= 0)
             continue;
+
         colors.append({
             QColor(bin.rSum / bin.count, bin.gSum / bin.count, bin.bSum / bin.count),
             bin.count
@@ -833,114 +607,32 @@ void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
         return a.count > b.count;
     });
 
-    const QColor c1 = colors[0].color;
-    const QColor c2 = (colors.size() > 1) ? colors[1].color : c1;
-
-    auto colorDistance = [](const QColor &a, const QColor &b) -> float {
-        const float dr = a.redF() - b.redF();
-        const float dg = a.greenF() - b.greenF();
-        const float db = a.blueF() - b.blueF();
-        const float rgb = std::sqrt(dr * dr + dg * dg + db * db);
-        const float lumA = a.redF() * 0.2126f + a.greenF() * 0.7152f + a.blueF() * 0.0722f;
-        const float lumB = b.redF() * 0.2126f + b.greenF() * 0.7152f + b.blueF() * 0.0722f;
-        const float lum = qAbs(lumA - lumB);
-        return rgb * 0.75f + lum * 0.25f;
-    };
-
-    QColor c3 = c2;
-    if (colors.size() > 2) {
-        float bestScore = -1.0f;
-        for (int i = 2; i < colors.size(); ++i) {
-            const QColor c = colors[i].color;
-            const float d1 = colorDistance(c, c1);
-            const float d2 = colorDistance(c, c2);
-            const float score = qMin(d1, d2);
-            if (score > bestScore) {
-                bestScore = score;
-                c3 = c;
+    QVector<QColor> finalPalette;
+    for (const auto &bc : colors) {
+        bool tooSimilar = false;
+        for (const QColor &existing : finalPalette) {
+            int dr = bc.color.red() - existing.red();
+            int dg = bc.color.green() - existing.green();
+            int db = bc.color.blue() - existing.blue();
+            if (std::sqrt(dr*dr + dg*dg + db*db) < 45) {
+                tooSimilar = true;
+                break;
             }
         }
-    }
-
-    m_palette = { c1, c2, c3 };
-}
-
-// ---------------------------------------------------------------------------
-
-void FullscreenPlayer::updateNoiseFrame()
-{
-    const int NW = 160, NH = 90;
-    QImage frame(NW, NH, QImage::Format_RGB32);
-
-    if (m_palette.size() < 3) { frame.fill(Qt::black); m_noiseFrame = frame; return; }
-
-    float pr[3], pg[3], pb[3];
-    for (int i = 0; i < 3; i++) {
-        pr[i] = m_palette[i].redF();
-        pg[i] = m_palette[i].greenF();
-        pb[i] = m_palette[i].blueF();
-    }
-
-    const float t  = m_phase;
-    const float sc = 1.6f;   // ← пространственная частота: меньше = крупнее пятна
-    auto sm = [](float x) { return x*x*(3.f-2.f*x); };
-
-    for (int y = 0; y < NH; y++) {
-        QRgb *line = reinterpret_cast<QRgb*>(frame.scanLine(y));
-        for (int x = 0; x < NW; x++) {
-
-            float px = (float)x / NW * sc;
-            float py = (float)y / NH * sc;
-
-            // лёгкий warp одним слоем — даёт органичность без завитков
-            float wx = gnoise(px + 0.0f, py + 0.0f + t * 0.10f) - 0.5f;
-            float wy = gnoise(px + 3.7f, py + 1.9f + t * 0.08f) - 0.5f;
-
-            float n0 = gnoise(px + wx * 0.8f + t * 0.10f,
-                              py + wy * 0.8f + t * 0.08f);
-            float n1 = gnoise(px + 4.6f + wx * 0.7f - t * 0.07f,
-                              py + 2.3f + wy * 0.7f + t * 0.06f);
-            float n2 = gnoise(px + 8.4f - wx * 0.6f + t * 0.05f,
-                              py + 5.1f - wy * 0.6f - t * 0.04f);
-
-            n0 = sm(n0);
-            n1 = sm(n1);
-            n2 = sm(n2);
-
-            float w[3] = {
-                std::pow(n0, 2.6f),
-                std::pow(n1, 2.6f),
-                std::pow(n2, 2.6f)
-            };
-
-            int maxIdx = 0;
-            int secondIdx = 1;
-            if (w[1] > w[0]) { maxIdx = 1; secondIdx = 0; }
-            if (w[2] > w[maxIdx]) { secondIdx = maxIdx; maxIdx = 2; }
-            else if (w[2] > w[secondIdx]) { secondIdx = 2; }
-
-            float sum = w[maxIdx] + w[secondIdx];
-            if (sum <= 0.0001f) {
-                w[maxIdx] = 0.5f;
-                w[secondIdx] = 0.5f;
-                sum = 1.0f;
-            }
-
-            float R = (pr[maxIdx] * w[maxIdx] + pr[secondIdx] * w[secondIdx]) / sum;
-            float G = (pg[maxIdx] * w[maxIdx] + pg[secondIdx] * w[secondIdx]) / sum;
-            float B = (pb[maxIdx] * w[maxIdx] + pb[secondIdx] * w[secondIdx]) / sum;
-
-            line[x] = qRgb(
-                qBound(0, (int)(R * 200.f), 255),
-                qBound(0, (int)(G * 200.f), 255),
-                qBound(0, (int)(B * 200.f), 255)
-            );
+        if (!tooSimilar) {
+            finalPalette.append(bc.color);
         }
+        if (finalPalette.size() >= 3) break;
     }
 
-    boxBlurRgb(frame, 6);
-    m_noiseFrame = frame;
+    while (finalPalette.size() < 3) {
+        if (finalPalette.isEmpty()) finalPalette.append(QColor(30, 30, 30));
+        else finalPalette.append(finalPalette.last());
+    }
+
+    m_palette = finalPalette;
 }
+
 // ---------------------------------------------------------------------------
 
 void FullscreenPlayer::paintEvent(QPaintEvent *)
@@ -965,9 +657,18 @@ void FullscreenPlayer::resizeEvent(QResizeEvent *e)
         layoutCard();
 }
 
+void FullscreenPlayer::updateBassLevel(float level)
+{
+    // Fast attack (0.8) to catch the 'kick', smooth decay (0.92)
+    if (level > m_lastLevel)
+        m_lastLevel = m_lastLevel * 0.2f + level * 0.8f; 
+    else
+        m_lastLevel = m_lastLevel * 0.92f + level * 0.08f;
+}
+
 void FullscreenPlayer::animateTick()
 {
-    m_phase += 0.05f;
+    m_phase += 0.015f;
     if (m_bgWidget)
         m_bgWidget->setTime(m_phase);
 }

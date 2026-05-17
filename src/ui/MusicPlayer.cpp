@@ -347,9 +347,19 @@ void MusicPlayer::setupUI()
     m_playlistList->setDefaultDropAction(Qt::MoveAction);
     m_playlistList->setAcceptDrops(true);
     m_playlistList->viewport()->setAcceptDrops(true);
+    m_playlistList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_playlistList->installEventFilter(this);
     m_playlistList->viewport()->installEventFilter(this);
     sidebarLayout->addWidget(m_playlistList, 1);
+
+    connect(m_playlistList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+        if (!item) return;
+        const QString id = item->data(Qt::UserRole).toString();
+        const QString newName = item->text().trimmed();
+        if (!id.isEmpty() && id != kAllPlaylistVirtualId && !newName.isEmpty()) {
+            m_playlistManager->renamePlaylist(id, newName);
+        }
+    });
 
     connect(m_playlistList->model(), &QAbstractItemModel::rowsMoved,
             this, &MusicPlayer::onPlaylistListRowsMoved);
@@ -699,6 +709,7 @@ void MusicPlayer::setupConnections()
     connect(m_engine, &GaplessAudioEngine::stateChanged, this, &MusicPlayer::onEngineStateChanged);
     connect(m_engine, &GaplessAudioEngine::trackTransitioned, this, &MusicPlayer::onEngineTrackTransitioned);
     connect(m_engine, &GaplessAudioEngine::playbackFinished, this, &MusicPlayer::onEnginePlaybackFinished);
+    connect(m_engine, &GaplessAudioEngine::bassLevel, m_fullscreenPlayer, &FullscreenPlayer::updateBassLevel);
 
     connect(m_shuffleButton, &QPushButton::clicked, this, [this]() {
         m_shuffleEnabled = !m_shuffleEnabled;
@@ -731,6 +742,9 @@ void MusicPlayer::setupConnections()
 
     connect(m_playlistTable->horizontalHeader(), &QHeaderView::sectionClicked, this, &MusicPlayer::onHeaderClicked);
     connect(m_playlistTable->horizontalHeader(), &QHeaderView::customContextMenuRequested, this, &MusicPlayer::showHeaderContextMenu);
+
+    m_playlistTable->installEventFilter(this);
+    m_playlistTable->viewport()->installEventFilter(this);
 
     // Connect scroll for lazy metadata loading of visible rows
     auto *scrollBar = m_playlistTable->verticalScrollBar();
@@ -1838,6 +1852,38 @@ void MusicPlayer::exportM3UPlaylist()
 
 bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
 {
+    // Mouse side buttons navigation
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::XButton1 || me->button() == Qt::XButton2) {
+            const bool isSidebar = (watched == m_playlistList || watched == m_playlistList->viewport());
+            const bool isTable = (watched == m_playlistTable || watched == m_playlistTable->viewport());
+            
+            if (event->type() == QEvent::MouseButtonPress) {
+                // Intercept press to prevent selection/focus changes
+                return true; 
+            }
+
+            if (isSidebar) {
+                int row = m_playlistList->currentRow();
+                // Playlist order: XButton1 -> Down, XButton2 -> Up
+                if (me->button() == Qt::XButton1) row++;
+                else row--;
+                if (row >= 0 && row < m_playlistList->count()) {
+                    m_playlistList->setCurrentRow(row);
+                }
+                return true;
+            } else if (isTable) {
+                // Track order: Inverted as requested (XButton1 -> Previous, XButton2 -> Next)
+                if (me->button() == Qt::XButton1) previous();
+                else next();
+                m_playlistTable->clearSelection();
+                m_playlistTable->setFocus();
+                return true;
+            }
+        }
+    }
+
     // Volume icon click → toggle mute
     if (watched == m_volumeLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
@@ -3706,13 +3752,22 @@ void MusicPlayer::onEnginePlaybackFinished() {
 
 void MusicPlayer::volumeChanged(int value) {
     float vol = value / 100.0f;
-    m_engine->setVolume(vol);
+    if (m_engine) m_engine->setVolume(vol);
     if (value == 0) m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x87"));
     else if (value < 50) m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x89"));
     else m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x8A"));
 
-    if (m_fullscreenPlayer)
+    if (m_fullscreenPlayer) {
+        m_fullscreenPlayer->blockSignals(true);
         m_fullscreenPlayer->updateVolume(value);
+        m_fullscreenPlayer->blockSignals(false);
+    }
+    
+    if (m_volumeSlider) {
+        m_volumeSlider->blockSignals(true);
+        m_volumeSlider->setValue(value);
+        m_volumeSlider->blockSignals(false);
+    }
 }
 
 // ============= UI Helpers =============

@@ -1541,6 +1541,33 @@ void GaplessAudioEngine::feedSink()
         read = m_currentBuf.read(m_chunkScratch.data(), chunkBytes);
 
     if (read > 0) {
+        // Level detection for beat-synced visuals
+        if (m_format.sampleFormat() == QAudioFormat::Float) {
+            float maxAbs = 0.0f;
+            float maxBass = 0.0f;
+            const float *s = reinterpret_cast<const float *>(m_chunkScratch.constData());
+            const int num = static_cast<int>(read / sizeof(float));
+            
+            // Aggressive RC Low-pass filter for sub-bass (50-60Hz)
+            static float s_lpState = 0.0f;
+            // alpha ~0.007 for ~50Hz cutoff at 44.1kHz
+            const float alpha = 0.007f;
+
+            for (int i = 0; i < num; ++i) {
+                const float val = s[i];
+                const float a = std::abs(val);
+                if (a > maxAbs) maxAbs = a;
+
+                // Isolate deep sub-bass
+                s_lpState = s_lpState + alpha * (val - s_lpState);
+                const float bassA = std::abs(s_lpState);
+                if (bassA > maxBass) maxBass = bassA;
+            }
+            emit currentAudioLevel(maxAbs);
+            // Strong boost for isolated sub-bass to make it visible
+            emit bassLevel(qMin(1.0f, maxBass * 15.0f));
+        }
+
         if (m_equalizer && m_equalizer->isEnabled())
             m_equalizer->process(m_chunkScratch.data(), read, m_format.channelCount(), m_format.bytesPerSample());
 
