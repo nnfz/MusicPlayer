@@ -1563,7 +1563,12 @@ void FfmpegDecoderBackend::emitQueuedChunk()
     const qint64 startUs = (m_emittedFrames * 1000000LL) / sampleRate;
     QAudioBuffer buffer(chunk, m_format, startUs);
     m_emittedFrames += mediaFrameCount;
-    m_positionMs = (m_emittedFrames * 1000LL) / sampleRate;
+
+    if (m_reachedEnd && m_pcmQueue.isEmpty()) {
+        m_positionMs = m_durationMs;
+    } else {
+        m_positionMs = (m_emittedFrames * 1000LL) / sampleRate;
+    }
 
     emit audioBufferReceived(buffer);
 }

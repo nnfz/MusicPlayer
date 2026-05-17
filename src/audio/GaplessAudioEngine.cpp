@@ -345,6 +345,7 @@ void GaplessAudioEngine::promotePreparedNextDecoder()
     m_nextSourceEnded = false;
 
     const QString promotedPath = m_nextFilePath;
+    const qint64 previousDuration = m_duration;
     m_currentFilePath = promotedPath;
     m_nextFilePath.clear();
     m_preparedNextPath.clear();
@@ -384,7 +385,7 @@ void GaplessAudioEngine::promotePreparedNextDecoder()
 
     m_pendingTrackTransitioned = true;
     m_pendingNextDuration = m_duration;
-    markAudibleTransition(previousPath, promotedPath, "gapless-promote");
+    markAudibleTransition(previousPath, promotedPath, previousDuration, "gapless-promote");
 
     if (!m_audibleTransitionPending)
         finalizePendingTrackTransition();
@@ -472,6 +473,7 @@ void GaplessAudioEngine::syncActiveOutputDeviceInfo()
 
 void GaplessAudioEngine::markAudibleTransition(const QString &fromPath,
                                                const QString &toPath,
+                                               qint64 fromDuration,
                                                const char *reason)
 {
     if (toPath.isEmpty())
@@ -491,6 +493,7 @@ void GaplessAudioEngine::markAudibleTransition(const QString &fromPath,
     m_audibleTransitionPending = true;
     m_audibleTransitionMarkedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_audibleTransitionEstimatedDelayMs = queuedMs;
+    m_audibleTransitionFromDurationMs = fromDuration;
     m_audibleTransitionFromPath = fromPath;
     m_audibleTransitionToPath = toPath;
 
@@ -498,6 +501,7 @@ void GaplessAudioEngine::markAudibleTransition(const QString &fromPath,
             << "reason=" << reason
             << "from=" << fromPath
             << "to=" << toPath
+            << "fromDuration=" << fromDuration
             << "markWallMs=" << m_audibleTransitionMarkedAtMs
             << "queuedBytesAtMark=" << queuedBytes
             << "estimatedDelayMs=" << queuedMs;
@@ -1027,8 +1031,13 @@ qint64 GaplessAudioEngine::position() const
     const int frameBytes = qMax(1, m_format.bytesPerFrame());
     const int sampleRate = qMax(1, m_format.sampleRate());
 
-    // Handle gapless transition: we're consuming pre-buffered audio from Song 2.
-    // Position = consumed pre-buffered audio amount.
+    if (m_audibleTransitionPending) {
+        const qint64 elapsedMs = qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_audibleTransitionMarkedAtMs);
+        const qint64 fromPosAtMark = qMax<qint64>(0, m_audibleTransitionFromDurationMs - m_audibleTransitionEstimatedDelayMs);
+        const qint64 pos = qBound<qint64>(0, fromPosAtMark + elapsedMs, m_audibleTransitionFromDurationMs);
+        return pos;
+    }
+
     // Normal position calculation
     const qint64 decodedMs = qMax<qint64>(0, m_decoder->position() - m_decoderPositionBaseMs);
 
@@ -1764,13 +1773,14 @@ void GaplessAudioEngine::feedSink()
         if (!m_nextFilePath.isEmpty()) {
             const QString nextPath = m_nextFilePath;
             const QString previousPath = m_currentFilePath;
+            const qint64 previousDuration = m_duration;
             m_nextFilePath.clear();
             qInfo() << "[seek-engine] fallback play next after source-ended"
                     << "seekId=" << m_seekTraceId
                     << "seekElapsedMs=" << seekElapsedMs
                     << "nextPath=" << nextPath;
             play(nextPath);
-            markAudibleTransition(previousPath, nextPath, "gapless-fallback-play");
+            markAudibleTransition(previousPath, nextPath, previousDuration, "gapless-fallback-play");
             emit trackTransitioned();
             return;
         }
@@ -1797,8 +1807,6 @@ void GaplessAudioEngine::onPositionTick()
 {
     if (m_state == Playing || m_state == Paused) {
         updateAudibleTransitionTrace();
-        if (m_pendingTrackTransitioned)
-            return;
         emit positionChanged(position());
     }
 }

@@ -126,7 +126,7 @@ private:
     bool formatsMatch(const QAudioFormat &a, const QAudioFormat &b) const;
     QString normalizeBackendId(const QString &backendId) const;
     void syncActiveOutputDeviceInfo();
-    void markAudibleTransition(const QString &fromPath, const QString &toPath, const char *reason);
+    void markAudibleTransition(const QString &fromPath, const QString &toPath, qint64 fromDuration, const char *reason);
     void updateAudibleTransitionTrace();
     void finalizePendingTrackTransition();
 
@@ -190,6 +190,7 @@ private:
     bool m_audibleTransitionPending = false;
     qint64 m_audibleTransitionMarkedAtMs = 0;
     qint64 m_audibleTransitionEstimatedDelayMs = 0;
+    qint64 m_audibleTransitionFromDurationMs = 0;
     QString m_audibleTransitionFromPath;
     QString m_audibleTransitionToPath;
 
