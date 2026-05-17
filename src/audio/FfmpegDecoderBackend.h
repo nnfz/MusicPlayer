@@ -84,6 +84,7 @@ private:
     int m_rateSwrOutRate = 0;
     float m_rateSwrAppliedRate = 1.0f;
     bool m_decoderFlushing = false;
+    bool m_packetPending = false;
 #endif
 };
 

@@ -32,6 +32,8 @@ extern "C" {
 
 namespace {
 
+QImage decodeCoverImage(const QByteArray &bytes);
+
 QImage defaultCoverImage()
 {
     QImage defaultCover(64, 64, QImage::Format_ARGB32);
@@ -283,6 +285,22 @@ QString normalizeTrackPathForCache(const QString &path)
 #endif
 }
 
+bool tryLoadTrackMetadataFromCacheFast(const QString &filePath, TrackMetadata &metadata)
+{
+    ensureTrackMetadataCacheLoaded();
+
+    const QString key = normalizeTrackPathForCache(filePath);
+
+    QMutexLocker locker(&s_trackMetadataCacheMutex);
+    const auto it = s_trackMetadataCache.constFind(key);
+    if (it == s_trackMetadataCache.cend())
+        return false;
+
+    metadata = it->metadata;
+    metadata.filePath = filePath;
+    return true;
+}
+
 bool tryLoadTrackMetadataFromCache(const QFileInfo &fileInfo, TrackMetadata &metadata)
 {
     ensureTrackMetadataCacheLoaded();
@@ -424,6 +442,98 @@ int parseTrackNumberTag(const QString &value)
     return (ok && parsed > 0) ? parsed : 0;
 }
 
+QImage decodeFlacPictureBlock(const QByteArray &block, const QString &filePath)
+{
+    if (block.size() < 32)
+        return {};
+
+    int offset = 0;
+    const auto ensureBytes = [&block, &offset](int count) {
+        return (count >= 0) && (offset + count <= block.size());
+    };
+    const auto readBe32 = [&block, &offset, &ensureBytes]() -> quint32 {
+        if (!ensureBytes(4))
+            return 0;
+        const uchar *p = reinterpret_cast<const uchar *>(block.constData() + offset);
+        const quint32 value = (static_cast<quint32>(p[0]) << 24)
+                            | (static_cast<quint32>(p[1]) << 16)
+                            | (static_cast<quint32>(p[2]) << 8)
+                            | static_cast<quint32>(p[3]);
+        offset += 4;
+        return value;
+    };
+
+    if (!ensureBytes(4))
+        return {};
+    const quint32 pictureType = readBe32();
+
+    if (!ensureBytes(4))
+        return {};
+    const quint32 mimeLen = readBe32();
+    if (!ensureBytes(static_cast<int>(mimeLen)))
+        return {};
+    offset += static_cast<int>(mimeLen);
+
+    if (!ensureBytes(4))
+        return {};
+    const quint32 descLen = readBe32();
+    if (!ensureBytes(static_cast<int>(descLen)))
+        return {};
+    offset += static_cast<int>(descLen);
+
+    if (!ensureBytes(16))
+        return {};
+    offset += 16; // width, height, depth, colors
+
+    if (!ensureBytes(4))
+        return {};
+    const quint32 dataLen = readBe32();
+    if (!ensureBytes(static_cast<int>(dataLen)))
+        return {};
+
+    const QByteArray imageBytes = block.mid(offset, static_cast<int>(dataLen));
+    QImage cover = decodeCoverImage(imageBytes);
+    if (!cover.isNull()) {
+        coverLog(filePath,
+                 QStringLiteral("extractCoverArt: METADATA_BLOCK_PICTURE type=%1 %2")
+                     .arg(pictureType)
+                     .arg(describeImageForLog(cover)));
+    }
+    return cover;
+}
+
+QImage extractCoverFromVorbisTags(const AVDictionary *primary,
+                                 const AVDictionary *secondary,
+                                 const QString &filePath)
+{
+    const QString pictureTag = firstNonEmptyTag(primary, secondary,
+                                                {"METADATA_BLOCK_PICTURE", "metadata_block_picture"});
+    if (!pictureTag.isEmpty()) {
+        const QByteArray block = QByteArray::fromBase64(
+            pictureTag.toUtf8(),
+            QByteArray::Base64Encoding | QByteArray::IgnoreBase64DecodingErrors);
+        QImage cover = decodeFlacPictureBlock(block, filePath);
+        if (!cover.isNull())
+            return cover;
+    }
+
+    const QString coverArtTag = firstNonEmptyTag(primary, secondary, {"COVERART", "coverart"});
+    if (!coverArtTag.isEmpty()) {
+        const QByteArray imageBytes = QByteArray::fromBase64(
+            coverArtTag.toUtf8(),
+            QByteArray::Base64Encoding | QByteArray::IgnoreBase64DecodingErrors);
+        QImage cover = decodeCoverImage(imageBytes);
+        if (!cover.isNull()) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: COVERART tag decoded, %1")
+                         .arg(describeImageForLog(cover)));
+            return cover;
+        }
+    }
+
+    return {};
+}
+
 bool isLikelyCoverImageCodecId(AVCodecID codecId)
 {
     switch (codecId) {
@@ -514,6 +624,14 @@ void applyFfmpegMetadata(const QString &filePath, TrackMetadata &metadata)
     const int trackNum = parseTrackNumberTag(trackRaw);
     if (trackNum > 0)
         metadata.trackNumber = trackNum;
+
+    if (metadata.coverArt.isNull()
+        || isDefaultCoverImage(metadata.coverArt)
+        || isSuspiciousCoverImage(metadata.coverArt)) {
+        const QImage tagCover = extractCoverFromVorbisTags(streamTags, formatTags, filePath);
+        if (!tagCover.isNull() && !isSuspiciousCoverImage(tagCover))
+            metadata.coverArt = tagCover;
+    }
 
     qint64 durationMs = 0;
     if (audioStream && audioStream->duration != AV_NOPTS_VALUE) {
@@ -964,6 +1082,62 @@ int findTextTerminator(const QByteArray &data, int start, quint8 encoding)
     return data.indexOf('\0', start);
 }
 
+QImage extractFlacPictureCover(const QString &filePath)
+{
+    coverLog(filePath, QStringLiteral("extractFlacPictureCover: begin"));
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+
+    QByteArray marker = file.read(4);
+    if (marker.startsWith("ID3")) {
+        file.seek(6);
+        QByteArray sizeBytes = file.read(4);
+        if (sizeBytes.size() == 4) {
+            quint32 id3Size = (static_cast<quint8>(sizeBytes[0]) << 21) |
+                              (static_cast<quint8>(sizeBytes[1]) << 14) |
+                              (static_cast<quint8>(sizeBytes[2]) << 7) |
+                              static_cast<quint8>(sizeBytes[3]);
+            file.seek(10 + id3Size);
+            marker = file.read(4);
+        }
+    }
+
+    if (marker != "fLaC")
+        return {};
+
+    bool lastBlock = false;
+    while (!lastBlock && !file.atEnd()) {
+        char headerByte;
+        if (!file.getChar(&headerByte))
+            break;
+        quint8 h = static_cast<quint8>(headerByte);
+        lastBlock = (h & 0x80) != 0;
+        quint8 blockType = h & 0x7F;
+
+        QByteArray lenBytes = file.read(3);
+        if (lenBytes.size() < 3) break;
+        quint32 blockLength = (static_cast<quint8>(lenBytes[0]) << 16)
+                            | (static_cast<quint8>(lenBytes[1]) << 8)
+                            | static_cast<quint8>(lenBytes[2]);
+
+        qint64 blockStart = file.pos();
+
+        if (blockType == 6) { // PICTURE
+            QByteArray blockData = file.read(blockLength);
+            QImage cover = decodeFlacPictureBlock(blockData, filePath);
+            if (!cover.isNull()) {
+                coverLog(filePath, QStringLiteral("extractFlacPictureCover: successfully decoded native picture block"));
+                return cover;
+            }
+        }
+
+        file.seek(blockStart + blockLength);
+    }
+    coverLog(filePath, QStringLiteral("extractFlacPictureCover: no usable picture block found"));
+    return {};
+}
+
 QImage extractMp3Id3ApicCover(const QString &filePath)
 {
     coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: begin"));
@@ -986,7 +1160,17 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
     if (tagSize == 0)
         return {};
 
-    QByteArray tag = file.read(static_cast<qint64>(tagSize));
+    // Broken taggers often write standard 32-bit integers or incorrect sizes.
+    // We read a generous chunk (up to 5MB) to ensure we capture the entire APIC frame
+    // even if tagSize is incorrectly small. The image decoder will stop at the image EOF.
+    qint64 readSize = static_cast<qint64>(tagSize);
+    const qint64 kMinSafeRead = 5 * 1024 * 1024;
+    if (readSize < kMinSafeRead)
+        readSize = kMinSafeRead;
+    if (readSize > file.size() - 10)
+        readSize = file.size() - 10;
+
+    QByteArray tag = file.read(readSize);
     if (tag.isEmpty())
         return {};
 
@@ -1018,6 +1202,7 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
         QByteArray frameId;
         int frameHeaderSize = 0;
         int frameSize = 0;
+        quint16 frameFlags = 0;
 
         if (versionMajor == 2) {
             if (pos + 6 > tag.size())
@@ -1038,13 +1223,25 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
             const uchar *sizePtr = reinterpret_cast<const uchar *>(tag.constData() + pos + 4);
             frameSize = (versionMajor == 4) ? static_cast<int>(readSyncSafe32(sizePtr))
                                             : static_cast<int>(readBe32(sizePtr));
+            frameFlags = (static_cast<uchar>(tag[pos + 8]) << 8) | static_cast<uchar>(tag[pos + 9]);
             frameHeaderSize = 10;
         }
 
-        if (frameSize <= 0 || pos + frameHeaderSize + frameSize > tag.size())
+        if (frameSize <= 0 || pos + frameHeaderSize > tag.size())
             break;
 
-        const QByteArray payload = tag.mid(pos + frameHeaderSize, frameSize);
+        int actualFrameSize = frameSize;
+        if (pos + frameHeaderSize + actualFrameSize > tag.size())
+            actualFrameSize = tag.size() - (pos + frameHeaderSize);
+
+        QByteArray payload = tag.mid(pos + frameHeaderSize, actualFrameSize);
+
+        if (versionMajor == 4) {
+            if ((frameFlags & 0x02) != 0) // unsynchronisation
+                payload = decodeUnsynchronization(payload);
+            if ((frameFlags & 0x01) != 0 && payload.size() >= 4) // data length indicator
+                payload.remove(0, 4);
+        }
 
         if (frameId == "APIC" && payload.size() > 4) {
             const quint8 encoding = static_cast<quint8>(payload[0]);
@@ -1062,12 +1259,19 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
             }
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, qMax(1, cursor));
-            if (imageStart >= 0 && imageStart < payload.size()) {
-                const QImage img = decodeCoverImage(payload.mid(imageStart));
-                if (!img.isNull()) {
-                    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: APIC decoded, %1")
-                                 .arg(describeImageForLog(img)));
-                    return img;
+            if (imageStart >= 0) {
+                const int absoluteImageStart = pos + frameHeaderSize + imageStart;
+                if (absoluteImageStart < tag.size()) {
+                    QByteArray imageData = tag.mid(absoluteImageStart);
+                    if (versionMajor == 4 && (frameFlags & 0x02) != 0) {
+                        imageData = payload.mid(imageStart);
+                    }
+                    const QImage img = decodeCoverImage(imageData);
+                    if (!img.isNull()) {
+                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: APIC decoded, %1")
+                                     .arg(describeImageForLog(img)));
+                        return img;
+                    }
                 }
             }
         } else if (frameId == "PIC" && payload.size() > 6) {
@@ -1079,12 +1283,19 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
                 imageStart = descEnd + ((encoding == 1 || encoding == 2) ? 2 : 1);
             if (imageStart < 0 || imageStart >= payload.size())
                 imageStart = findImageDataOffset(payload, cursor);
-            if (imageStart >= 0 && imageStart < payload.size()) {
-                const QImage img = decodeCoverImage(payload.mid(imageStart));
-                if (!img.isNull()) {
-                    coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: PIC decoded, %1")
-                                 .arg(describeImageForLog(img)));
-                    return img;
+            if (imageStart >= 0) {
+                const int absoluteImageStart = pos + frameHeaderSize + imageStart;
+                if (absoluteImageStart < tag.size()) {
+                    QByteArray imageData = tag.mid(absoluteImageStart);
+                    if (versionMajor == 4 && (frameFlags & 0x02) != 0) {
+                        imageData = payload.mid(imageStart);
+                    }
+                    const QImage img = decodeCoverImage(imageData);
+                    if (!img.isNull()) {
+                        coverLog(filePath, QStringLiteral("extractMp3Id3ApicCover: PIC decoded, %1")
+                                     .arg(describeImageForLog(img)));
+                        return img;
+                    }
                 }
             }
         }
@@ -1108,13 +1319,36 @@ QImage extractMp3Id3ApicCover(const QString &filePath)
 
 } // namespace
 
+void TrackItem::clearTrackMetadataCache()
+{
+    ensureTrackMetadataCacheLoaded();
+    {
+        QMutexLocker locker(&s_trackMetadataCacheMutex);
+        s_trackMetadataCache.clear();
+    }
+    
+    QSqlDatabase db = openCacheDb();
+    if (db.isOpen()) {
+        QSqlQuery q(db);
+        q.exec(QStringLiteral("DELETE FROM track_metadata"));
+    }
+}
+
 TrackItem::TrackItem(const QString &filePath, bool deferMetadata)
 {
     m_metadata.filePath = filePath;
-    if (deferMetadata)
-        initializeBasicMetadata();
-    else
+    if (deferMetadata) {
+        TrackMetadata cachedMeta;
+        if (tryLoadTrackMetadataFromCacheFast(filePath, cachedMeta)) {
+            m_metadata = cachedMeta;
+            // Leave m_metadataLoaded = false so the background thread verifies 
+            // the file size and modification time later.
+        } else {
+            initializeBasicMetadata();
+        }
+    } else {
         loadMetadata();
+    }
 }
 
 void TrackItem::ensureMetadataLoaded()
@@ -1164,6 +1398,12 @@ void TrackItem::ensureMetadataLoaded()
     if (probe.sampleRate > 0) m_metadata.sampleRate = probe.sampleRate;
     if (probe.bitrate > 0) m_metadata.bitrate = probe.bitrate;
     if (probe.duration > 0) m_metadata.duration = probe.duration;
+    if (!probe.coverArt.isNull()
+        && (m_metadata.coverArt.isNull()
+            || isDefaultCoverImage(m_metadata.coverArt)
+            || isSuspiciousCoverImage(m_metadata.coverArt))) {
+        m_metadata.coverArt = probe.coverArt;
+    }
 #endif
 
     // Handle format-specific duration
@@ -1184,35 +1424,36 @@ void TrackItem::ensureMetadataLoaded()
     m_metadataLoaded = true;
 }
 
+bool TrackItem::isCoverPlaceholder() const
+{
+    if (m_metadata.coverArt.isNull())
+        return true;
+
+    if (isDefaultCoverImage(m_metadata.coverArt))
+        return true;
+
+    return isSuspiciousCoverImage(m_metadata.coverArt);
+}
+
+bool TrackItem::applyMetadataCover(const QImage &cover)
+{
+    if (cover.isNull() || isSuspiciousCoverImage(cover))
+        return false;
+
+    m_metadata.coverArt = cover;
+    QFileInfo fileInfo(m_metadata.filePath);
+    updateTrackMetadataCache(fileInfo, m_metadata);
+    return true;
+}
+
 void TrackItem::initializeBasicMetadata()
 {
     const QFileInfo fileInfo(m_metadata.filePath);
     m_metadata.filePath = fileInfo.absoluteFilePath();
-    const QString fileName = fileInfo.completeBaseName();
-    const QStringList parts = fileName.split(" - ");
-
-    if (parts.size() >= 2) {
-        if (parts.size() >= 3) {
-            bool ok = false;
-            const int trackNum = parts[0].trimmed().toInt(&ok);
-            if (ok) {
-                m_metadata.trackNumber = trackNum;
-                m_metadata.artist = parts[1].trimmed();
-                m_metadata.title = parts[2].trimmed();
-            } else {
-                m_metadata.artist = parts[0].trimmed();
-                m_metadata.title = parts[1].trimmed();
-            }
-        } else {
-            m_metadata.artist = parts[0].trimmed();
-            m_metadata.title = parts[1].trimmed();
-        }
-    } else {
-        m_metadata.title = fileName;
-        m_metadata.artist = "Unknown Artist";
-    }
-
-    m_metadata.album = fileInfo.dir().dirName();
+    
+    m_metadata.title = "Loading...";
+    m_metadata.artist = "Loading...";
+    m_metadata.album = "Loading...";
     m_metadata.coverArt = defaultCoverImage();
     m_metadata.duration = 0;
 }
@@ -1309,6 +1550,33 @@ void TrackItem::loadMetadata()
     } else if (suffix == "mp3") {
         qint64 dur = readMp3Duration(m_metadata.filePath);
         if (m_metadata.duration <= 0 && dur > 0) m_metadata.duration = dur;
+    }
+
+    // Fallback: if no real tags were found, try to guess from filename
+    if (m_metadata.artist.isEmpty() && m_metadata.title == fileInfo.completeBaseName()) {
+        const QString fileName = fileInfo.completeBaseName();
+        const QStringList parts = fileName.split(" - ");
+        if (parts.size() >= 2) {
+            if (parts.size() >= 3) {
+                bool ok = false;
+                const int trackNum = parts[0].trimmed().toInt(&ok);
+                if (ok) {
+                    if (m_metadata.trackNumber <= 0) m_metadata.trackNumber = trackNum;
+                    m_metadata.artist = parts[1].trimmed();
+                    m_metadata.title = parts[2].trimmed();
+                } else {
+                    m_metadata.artist = parts[0].trimmed();
+                    m_metadata.title = parts[1].trimmed();
+                }
+            } else {
+                m_metadata.artist = parts[0].trimmed();
+                m_metadata.title = parts[1].trimmed();
+            }
+        } else {
+            m_metadata.artist = "Unknown Artist";
+        }
+    } else if (m_metadata.artist.isEmpty()) {
+        m_metadata.artist = "Unknown Artist";
     }
 
     updateTrackMetadataCache(fileInfo, m_metadata);
@@ -1431,6 +1699,19 @@ void TrackItem::readFlacFileInfo(const QString &filePath, int &sampleRate,
         return;
 
     QByteArray marker = file.read(4);
+    if (marker.startsWith("ID3")) {
+        file.seek(6);
+        QByteArray sizeBytes = file.read(4);
+        if (sizeBytes.size() == 4) {
+            quint32 id3Size = (static_cast<quint8>(sizeBytes[0]) << 21) |
+                              (static_cast<quint8>(sizeBytes[1]) << 14) |
+                              (static_cast<quint8>(sizeBytes[2]) << 7) |
+                              static_cast<quint8>(sizeBytes[3]);
+            file.seek(10 + id3Size);
+            marker = file.read(4);
+        }
+    }
+
     if (marker != "fLaC")
         return;
 
@@ -1602,10 +1883,29 @@ QImage TrackItem::extractCoverArt(const QString &filePath)
     QFileInfo fileInfo(filePath);
     QString dirPath = fileInfo.absolutePath();
     const bool isMp3 = fileInfo.suffix().compare("mp3", Qt::CaseInsensitive) == 0;
+    const bool isFlac = fileInfo.suffix().compare("flac", Qt::CaseInsensitive) == 0;
 
     coverLog(filePath,
              QStringLiteral("extractCoverArt: begin, suffix=%1")
                  .arg(fileInfo.suffix().toLower()));
+
+    if (isFlac) {
+        QImage flacCover = extractFlacPictureCover(filePath);
+        if (!flacCover.isNull() && !isSuspiciousCoverImage(flacCover)) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: using FLAC native picture block cover, %1")
+                         .arg(describeImageForLog(flacCover)));
+            return flacCover;
+        }
+        
+        QImage flacId3Cover = extractMp3Id3ApicCover(filePath);
+        if (!flacId3Cover.isNull() && !isSuspiciousCoverImage(flacId3Cover)) {
+            coverLog(filePath,
+                     QStringLiteral("extractCoverArt: using ID3 APIC cover for FLAC, %1")
+                         .arg(describeImageForLog(flacId3Cover)));
+            return flacId3Cover;
+        }
+    }
 
     QStringList coverNames = {
         "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png",

@@ -304,6 +304,7 @@ QString PlaylistManager::createPlaylist(const QString &name)
     pl.name = name;
     m_playlists.append(pl);
     savePlaylist(pl);
+    saveOrder();
     emit playlistsChanged();
     return pl.id;
 }
@@ -326,6 +327,7 @@ void PlaylistManager::deletePlaylist(const QString &id)
         if (m_playlists[i].id == id) {
             m_playlists.removeAt(i);
             deletePlaylistFile(id);
+            saveOrder();
             emit playlistsChanged();
             return;
         }
@@ -443,6 +445,39 @@ void PlaylistManager::deletePlaylistFile(const QString &id)
     QFile::remove(playlistFilePath(id));
 }
 
+void PlaylistManager::saveOrder()
+{
+    QFile file(m_storageDir + "/order.json");
+    if (file.open(QIODevice::WriteOnly)) {
+        QJsonArray arr;
+        for (const auto &pl : m_playlists) {
+            arr.append(pl.id);
+        }
+        QJsonDocument doc(arr);
+        file.write(doc.toJson(QJsonDocument::Compact));
+    }
+}
+
+void PlaylistManager::reorderPlaylists(const QStringList &ids)
+{
+    QList<PlaylistInfo> newPlaylists;
+    for (const QString &id : ids) {
+        for (const auto &pl : m_playlists) {
+            if (pl.id == id) {
+                newPlaylists.append(pl);
+                break;
+            }
+        }
+    }
+    
+    // Only update if we didn't lose any playlists (sanity check)
+    if (newPlaylists.count() == m_playlists.count()) {
+        m_playlists = newPlaylists;
+        saveOrder();
+        // Do not emit playlistsChanged() here to avoid rebuilding UI during drag&drop
+    }
+}
+
 void PlaylistManager::save()
 {
     for (const auto &pl : m_playlists)
@@ -485,5 +520,32 @@ void PlaylistManager::load()
             if (repairedTrackPaths)
                 savePlaylist(pl);
         }
+    }
+
+    QFile orderFile(dir.filePath("order.json"));
+    if (orderFile.open(QIODevice::ReadOnly)) {
+        QStringList order;
+        QJsonDocument doc = QJsonDocument::fromJson(orderFile.readAll());
+        if (doc.isArray()) {
+            QJsonArray arr = doc.array();
+            for (const QJsonValue &v : arr) {
+                QString id = v.toString();
+                if (!id.isEmpty())
+                    order.append(id);
+            }
+        }
+        
+        std::sort(m_playlists.begin(), m_playlists.end(), [&order](const PlaylistInfo &a, const PlaylistInfo &b) {
+            int idxA = order.indexOf(a.id);
+            int idxB = order.indexOf(b.id);
+            if (idxA == -1) idxA = 999999;
+            if (idxB == -1) idxB = 999999;
+            if (idxA != idxB) return idxA < idxB;
+            return a.name.localeAwareCompare(b.name) < 0;
+        });
+    } else {
+        std::sort(m_playlists.begin(), m_playlists.end(), [](const PlaylistInfo &a, const PlaylistInfo &b) {
+            return a.name.localeAwareCompare(b.name) < 0;
+        });
     }
 }

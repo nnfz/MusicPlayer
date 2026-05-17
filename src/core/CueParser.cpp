@@ -52,6 +52,13 @@ QString decodeBytes(const QByteArray &raw)
     }
 
     const QString asUtf8 = QString::fromUtf8(raw);
+    if (!asUtf8.contains(QChar::ReplacementCharacter))
+        return asUtf8;
+
+    const QString asLocal = QString::fromLocal8Bit(raw);
+    if (!asLocal.isEmpty())
+        return asLocal;
+
     return asUtf8;
 }
 
@@ -91,7 +98,7 @@ QList<CueTrack> CueParser::parse(const QString &cuePath)
     const QString absPath = QFileInfo(cuePath).absoluteFilePath();
 
     static QRegularExpression reFile(
-        QStringLiteral("^\\s*FILE\\s+(.+?)\\s*(?:WAVE|MP3|AIFF|BINARY|MOTOROLA)?\\s*$"),
+        QStringLiteral("^\\s*FILE\\s+(.+?)\\s*(?:WAVE|MP3|AIFF|BINARY|MOTOROLA|FLAC|OGG|APE|WV|WMA|M4A|AAC|OPUS|TAK|TTA)?\\s*$"),
         QRegularExpression::CaseInsensitiveOption);
     static QRegularExpression reTrack(
         QStringLiteral("^\\s*TRACK\\s+(\\d+)\\s+AUDIO"),

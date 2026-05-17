@@ -19,6 +19,10 @@
 #include <QSet>
 #include <QVector>
 
+#ifdef Q_OS_WIN
+class WinTaskbarButtons;
+#endif
+
 #include "TrackItem.h"
 #include "GaplessAudioEngine.h"
 #include "PlaylistManager.h"
@@ -67,6 +71,7 @@ private slots:
     void processDeferredMetadataBatch();
     void onBackgroundMetadataLoaded(const QString &filePath);
     void onRowsMoved(QList<int> sourceRows, int targetRow);
+    void onPlaylistListRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
     void syncTracksToTableOrder();
     void onLikeButtonClicked();
     void showHeaderContextMenu(const QPoint &pos);
@@ -112,6 +117,7 @@ private:
     void clearPlaylistCache(const QString &playlistId);
     void startDeferredMetadataLoading(int startIndex = 0);
     void stopDeferredMetadataLoading();
+    void forceLoadMetadataForTracks(const QList<TrackItem*> &tracks, const QString &title);
     void configurePlaylistAutoSourceDirectory(const QString &playlistId);
     void setPlaylistAutoSourceDirectory(const QString &playlistId);
     void clearPlaylistAutoSourceDirectory(const QString &playlistId);
@@ -129,6 +135,8 @@ private:
     bool setTrackLiked(const QString &filePath, bool liked);
     void refreshLikeIndicatorsForPath(const QString &filePath);
     void sortByColumn(int logicalIndex, Qt::SortOrder order);
+    int resolvePlayingTrackIndex() const;
+    void updatePlaybackTrackKey();
     int getNextTrackIndex(bool commitSelection = false,
                           bool ignoreRepeatOneForManualAdvance = false);
     int getPreviousTrackIndex();
@@ -157,6 +165,7 @@ private:
     int m_metadataLoadIndex;
     int m_deferredMetadataIndex = -1;
     QString m_deferredMetadataPlaylistId;
+    QString m_forceMetadataLoadPlaylistId;
     QStringList m_globalMetadataPreloadPaths;
     QSet<QString> m_globalMetadataQueuedKeys;
     int m_globalMetadataPreloadIndex = -1;
@@ -183,8 +192,10 @@ private:
     PlaylistManager *m_playlistManager = nullptr;
     QHash<QString, QStringList> m_playlistTrackCache;
     QHash<QString, QString> m_playlistLastTrackPath;
+    QHash<QString, int> m_playlistScrollPositions;
     QString m_currentPlaylistId;
     QString m_playbackPlaylistId;
+    QString m_playbackTrackKey;
     QListWidget *m_playlistList = nullptr;
     QSplitter *m_splitter = nullptr;
 
@@ -238,6 +249,10 @@ private:
     Equalizer *m_equalizer = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     FullscreenPlayer *m_fullscreenPlayer = nullptr;
+
+    #ifdef Q_OS_WIN
+        WinTaskbarButtons *m_winTaskbar = nullptr;
+    #endif
 };
 
 #endif // MUSICPLAYER_H

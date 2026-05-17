@@ -1,4 +1,4 @@
-QT += core gui widgets multimedia sql
+QT += core gui widgets multimedia sql opengl openglwidgets 
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -27,12 +27,13 @@ SOURCES += \
     src/core/TrackItem.cpp \
     src/app/main.cpp \
     src/ui/MusicPlayer.cpp \
+    src/ui/WinTaskbarButtons.cpp \
     src/ui/MetadataLoaderThread.cpp \
     src/ui/FullscreenPlayer.cpp
 
 win32 {
     SOURCES += src/audio/WasapiAudioOutputBackend.cpp
-    LIBS += -lole32 -luuid -lavrt
+    LIBS += -lole32 -luuid -lavrt -lshell32 -lcomctl32 -lmingw32
 
     FFMPEG_DIR = $$PWD/third_party/ffmpeg
     exists($$FFMPEG_DIR/include/libavformat/avformat.h): exists($$FFMPEG_DIR/lib/libavformat.dll.a) {
@@ -66,6 +67,7 @@ HEADERS += \
     src/ui/MusicPlayer.h \
     src/ui/MetadataLoaderThread.h \
     src/ui/FullscreenPlayer.h \
+    src/ui/WinTaskbarButtons.h \
     src/core/TrackItem.h
 
 RESOURCES += \

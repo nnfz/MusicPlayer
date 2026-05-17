@@ -6,6 +6,10 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmapCache>
+#include <QScrollBar>
+#include <QWheelEvent>
+#include <QTimer>
 #include <algorithm>
 
 PlaylistTable::PlaylistTable(QWidget *parent)
@@ -22,6 +26,7 @@ PlaylistTable::PlaylistTable(QWidget *parent)
     setMouseTracking(true);
     setDragDropOverwriteMode(false);
     setDropIndicatorShown(false);
+    setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     verticalHeader()->setVisible(false);
     horizontalHeader()->setStretchLastSection(false);
@@ -47,6 +52,11 @@ PlaylistTable::PlaylistTable(QWidget *parent)
             this, &PlaylistTable::onSectionMoved);
     connect(horizontalHeader(), &QHeaderView::geometriesChanged,
             this, &PlaylistTable::enforceRightmostResizeLock);
+
+    m_scrollTimer = new QTimer(this);
+    m_scrollTimer->setTimerType(Qt::PreciseTimer);
+    m_scrollTimer->setInterval(8);
+    connect(m_scrollTimer, &QTimer::timeout, this, &PlaylistTable::tickSmoothScroll);
 }
 
 void PlaylistTable::snapshotIdealWidths()
@@ -214,6 +224,16 @@ void PlaylistTable::setPlayingRow(int row)
     }
 }
 
+void PlaylistTable::resetSmoothScroll()
+{
+    if (m_scrollTimer)
+        m_scrollTimer->stop();
+    if (verticalScrollBar())
+        m_scrollTarget = verticalScrollBar()->value();
+    else
+        m_scrollTarget = 0;
+}
+
 void PlaylistTable::applyIdealWidths()
 {
     int vw = viewport()->width();
@@ -257,6 +277,98 @@ void PlaylistTable::resizeEvent(QResizeEvent *event)
 {
     QTableWidget::resizeEvent(event);
     applyIdealWidths();
+}
+
+void PlaylistTable::wheelEvent(QWheelEvent *event)
+{
+    if (!verticalScrollBar()) {
+        QTableWidget::wheelEvent(event);
+        return;
+    }
+
+    if (event->modifiers() & Qt::ControlModifier) {
+        QTableWidget::wheelEvent(event);
+        return;
+    }
+
+    const QPoint angleDelta = event->angleDelta();
+    const QPoint pixelDelta = event->pixelDelta();
+    if (pixelDelta.isNull() && angleDelta.isNull()) {
+        QTableWidget::wheelEvent(event);
+        return;
+    }
+
+    if (!angleDelta.isNull() && angleDelta.y() == 0 && pixelDelta.isNull()) {
+        QTableWidget::wheelEvent(event);
+        return;
+    }
+
+    int rowH = rowCount() > 0 ? rowHeight(0) : 0;
+    if (rowH <= 0)
+        rowH = 36;
+
+    int delta = 0;
+    if (!pixelDelta.isNull()) {
+        delta = pixelDelta.y();
+    } else {
+        const float steps = angleDelta.y() / 120.0f;
+        delta = static_cast<int>(steps * rowH * 2.0f);
+    }
+
+    const int maxStep = rowH * 3;
+    delta = qBound(-maxStep, delta, maxStep);
+
+    if (delta == 0) {
+        event->accept();
+        return;
+    }
+
+    const int current = verticalScrollBar()->value();
+    const int baseTarget = (m_scrollTimer && m_scrollTimer->isActive()) ? m_scrollTarget : current;
+    int target = baseTarget - delta;
+    target = qBound(verticalScrollBar()->minimum(), target, verticalScrollBar()->maximum());
+    m_scrollTarget = target;
+
+    if (m_scrollTimer && !m_scrollTimer->isActive()) {
+        m_scrollClock.restart();
+        m_scrollTimer->start();
+    }
+
+    event->accept();
+}
+
+void PlaylistTable::tickSmoothScroll()
+{
+    if (!verticalScrollBar() || !m_scrollTimer) {
+        if (m_scrollTimer)
+            m_scrollTimer->stop();
+        return;
+    }
+
+    const int current = verticalScrollBar()->value();
+    const int dist = m_scrollTarget - current;
+    if (qAbs(dist) <= 1) {
+        verticalScrollBar()->setValue(m_scrollTarget);
+        m_scrollTimer->stop();
+        return;
+    }
+
+    qint64 dt = m_scrollClock.isValid() ? m_scrollClock.restart() : 16;
+    dt = qMax<qint64>(1, qMin<qint64>(dt, 40));
+
+    int rowH = rowCount() > 0 ? rowHeight(0) : 0;
+    if (rowH <= 0)
+        rowH = 36;
+
+    const float alpha = 1.0f - std::exp(-static_cast<float>(dt) / 120.0f);
+    int step = static_cast<int>(dist * alpha);
+    if (step == 0)
+        step = (dist > 0) ? 1 : -1;
+
+    const int maxStep = qMax(4, rowH / 3);
+    step = qBound(-maxStep, step, maxStep);
+
+    verticalScrollBar()->setValue(current + step);
 }
 
 void PlaylistTable::onSectionResized(int logicalIndex, int oldSize, int newSize)
@@ -414,7 +526,16 @@ void RowHoverDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opti
             QPixmap pixmap = qvariant_cast<QPixmap>(decoration);
             if (!pixmap.isNull()) {
                 int side = qMin(opt.rect.width(), opt.rect.height()) - 4;
-                QPixmap scaled = pixmap.scaled(side, side, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                QPixmap scaled = pixmap;
+                if (side > 0 && (pixmap.width() > side || pixmap.height() > side)) {
+                    const QString key = QStringLiteral("pl-cover-%1-%2")
+                        .arg(pixmap.cacheKey())
+                        .arg(side);
+                    if (!QPixmapCache::find(key, &scaled)) {
+                        scaled = pixmap.scaled(side, side, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                        QPixmapCache::insert(key, scaled);
+                    }
+                }
                 int x = opt.rect.center().x() - scaled.width() / 2;
                 int y = opt.rect.center().y() - scaled.height() / 2;
                 painter->setRenderHint(QPainter::Antialiasing);

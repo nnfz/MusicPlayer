@@ -10,6 +10,8 @@
 #include <QtGlobal>
 #include <limits>
 #include <cmath>
+#include <QElapsedTimer>
+#include <QThread>
 
 #ifdef MUSICPLAYER_HAS_FFMPEG
 extern "C" {
@@ -701,6 +703,7 @@ void FfmpegDecoderBackend::stop()
         }
     }
     m_decoderFlushing = false;
+    m_packetPending = false;
 #endif
 
     resetPlaybackRateResampler();
@@ -1007,8 +1010,6 @@ void FfmpegDecoderBackend::seek(qint64 positionMs)
     }
 
     if (m_formatCtx->pb) {
-        // Some demuxers can keep EOF/error latched across seek success paths.
-        // Clear them proactively to avoid immediate av_read_frame EOF loops.
         m_formatCtx->pb->eof_reached = 0;
         m_formatCtx->pb->error = 0;
     }
@@ -1025,6 +1026,7 @@ void FfmpegDecoderBackend::seek(qint64 positionMs)
     m_reachedEnd = false;
     m_endOfStreamEmitted = false;
     m_decoderFlushing = false;
+    m_packetPending = false;
     m_pendingLeadingTrimFrames = 0;
     m_pendingTrailingTrimFrames = m_trailingTrimFrames;
     m_seekTargetMs = targetMs;
@@ -1041,18 +1043,18 @@ void FfmpegDecoderBackend::seek(qint64 positionMs)
         m_pumpTimer->start();
     }
 
-        qInfo() << "[seek-decoder] complete"
-            << "id=" << seekId
-            << "positionMs=" << m_positionMs
-            << "seekDiscardActive=" << m_seekDiscardActive
-            << "seekDiscardFrames=" << m_seekDiscardOutputFrames
-            << "unknownFramesToDrop=" << m_seekUnknownFramesToDrop
-            << "queueBytesAfter=" << m_pcmQueue.size();
+    qInfo() << "[seek-decoder] complete"
+        << "id=" << seekId
+        << "positionMs=" << m_positionMs
+        << "seekDiscardActive=" << m_seekDiscardActive
+        << "seekDiscardFrames=" << m_seekDiscardOutputFrames
+        << "unknownFramesToDrop=" << m_seekUnknownFramesToDrop
+        << "queueBytesAfter=" << m_pcmQueue.size();
 #else
     m_positionMs = targetMs;
-        qInfo() << "[seek-decoder] complete-no-ffmpeg"
-            << "id=" << seekId
-            << "positionMs=" << m_positionMs;
+    qInfo() << "[seek-decoder] complete-no-ffmpeg"
+        << "id=" << seekId
+        << "positionMs=" << m_positionMs;
 #endif
 }
 
@@ -1171,13 +1173,14 @@ void FfmpegDecoderBackend::onPumpTimeout()
     emitQueuedChunk();
 
     const float rate = qBound(0.5f, m_playbackRate, 2.0f);
-    const qint64 targetQueueUs = static_cast<qint64>(300000.0 * static_cast<double>(rate));
+    // Increase buffer size to 1 second for high-bitrate formats like APE
+    const qint64 targetQueueUs = static_cast<qint64>(1000000.0 * static_cast<double>(rate));
     const qint64 targetQueueBytes = qMax<qint64>(
             m_format.bytesForDuration(targetQueueUs),
         static_cast<qint64>(m_format.bytesPerFrame()) * 1024);
 
     int attempts = 0;
-    while (m_pcmQueue.size() < targetQueueBytes && !m_reachedEnd && attempts < 16) {
+    while (m_pcmQueue.size() < targetQueueBytes && !m_reachedEnd && attempts < 24) {
         if (!decodeSomePcm())
             break;
         ++attempts;
@@ -1192,8 +1195,6 @@ void FfmpegDecoderBackend::onPumpTimeout()
         m_endOfStreamEmitted = true;
         emit endOfStream();
 
-        // endOfStream handlers can recover inline via seek(), which resets
-        // m_reachedEnd and expects decoding to continue on the same timer.
         const bool stillAtEnd = m_reachedEnd && m_pcmQueue.isEmpty();
         if (m_pumpTimer && (m_state != State::Playing || stillAtEnd))
             m_pumpTimer->stop();
@@ -1221,6 +1222,7 @@ void FfmpegDecoderBackend::closeSource()
 
     m_streamIndex = -1;
     m_decoderFlushing = false;
+    m_packetPending = false;
 #endif
 
     m_pcmQueue.clear();
@@ -1254,176 +1256,157 @@ bool FfmpegDecoderBackend::decodeSomePcm()
 
     for (;;) {
         if (!m_decoderFlushing) {
-            const int readRet = av_read_frame(m_formatCtx, m_packet);
-            if (readRet == AVERROR_EOF) {
-                if (m_seekDiscardActive
-                    && m_seekTargetMs > 0
-                    && m_seekAnchorFallbackAttempts < kSeekAnchorFallbackMaxAttempts) {
-                    const int attempt = ++m_seekAnchorFallbackAttempts;
-                    const qint64 anchorBackoffMs = static_cast<qint64>(attempt) * kSeekAnchorStepMs;
-                    const qint64 anchorMs = qMax<qint64>(0, m_seekTargetMs - anchorBackoffMs);
-                    const int64_t anchorUs = static_cast<int64_t>(anchorMs) * 1000;
+            if (m_packetPending) {
+                const int sendRet = avcodec_send_packet(m_codecCtx, m_packet);
+                if (sendRet == AVERROR(EAGAIN)) {
+                    // Decoder still full; must drain frames
+                } else {
+                    m_packetPending = false;
+                    av_packet_unref(m_packet);
+                    if (sendRet < 0) {
+                        qWarning() << "FFmpeg: avcodec_send_packet (pending) failed" << avErrorToString(sendRet);
+                    }
+                }
+            }
 
-                    qWarning() << "[seek-decoder] immediate EOF after seek, retrying from earlier anchor"
-                               << "attempt=" << attempt
-                               << "targetMs=" << m_seekTargetMs
-                               << "anchorMs=" << anchorMs
-                               << "source=" << m_currentSource;
+            if (!m_packetPending) {
+                const int readRet = av_read_frame(m_formatCtx, m_packet);
+                if (readRet == AVERROR_EOF) {
+                    if (m_seekDiscardActive
+                        && m_seekTargetMs > 0
+                        && m_seekAnchorFallbackAttempts < kSeekAnchorFallbackMaxAttempts) {
+                        const int attempt = ++m_seekAnchorFallbackAttempts;
+                        const qint64 anchorBackoffMs = static_cast<qint64>(attempt) * kSeekAnchorStepMs;
+                        const qint64 anchorMs = qMax<qint64>(0, m_seekTargetMs - anchorBackoffMs);
+                        const int64_t anchorUs = static_cast<int64_t>(anchorMs) * 1000;
 
-                    int retryErr = AVERROR(EINVAL);
-                    qint64 discardReferenceMs = anchorMs;
-                    if (m_formatCtx->pb) {
-                        const int64_t fileSize = avio_size(m_formatCtx->pb);
-                        if (fileSize > 0) {
-                            int64_t byteTarget = -1;
-                            qint64 mappedAnchorMs = -1;
-                            const bool hasPacketAlignedTarget = resolvePacketAlignedByteTarget(
-                                m_currentSource,
-                                anchorMs,
-                                fileSize,
-                                &byteTarget,
-                                &mappedAnchorMs);
+                        qWarning() << "[seek-decoder] immediate EOF after seek, retrying from earlier anchor"
+                                   << "attempt=" << attempt
+                                   << "targetMs=" << m_seekTargetMs
+                                   << "anchorMs=" << anchorMs
+                                   << "source=" << m_currentSource;
 
-                            if (!hasPacketAlignedTarget && m_rawDurationMs > 0) {
-                                const int64_t byteTargetRaw =
-                                    (fileSize * anchorMs) / qMax<qint64>(1, m_rawDurationMs);
-                                byteTarget = qBound<int64_t>(0, byteTargetRaw, fileSize - 1);
-                            }
+                        int retryErr = AVERROR(EINVAL);
+                        qint64 discardReferenceMs = anchorMs;
+                        if (m_formatCtx->pb) {
+                            const int64_t fileSize = avio_size(m_formatCtx->pb);
+                            if (fileSize > 0) {
+                                int64_t byteTarget = -1;
+                                qint64 mappedAnchorMs = -1;
+                                const bool hasPacketAlignedTarget = resolvePacketAlignedByteTarget(
+                                    m_currentSource,
+                                    anchorMs,
+                                    fileSize,
+                                    &byteTarget,
+                                    &mappedAnchorMs);
 
-                            if (byteTarget >= 0) {
-                                retryErr = seekByByteOffset(m_formatCtx, byteTarget);
-                                if (retryErr >= 0) {
-                                    if (mappedAnchorMs >= 0)
-                                        discardReferenceMs = mappedAnchorMs;
+                                if (!hasPacketAlignedTarget && m_rawDurationMs > 0) {
+                                    const int64_t byteTargetRaw =
+                                        (fileSize * anchorMs) / qMax<qint64>(1, m_rawDurationMs);
+                                    byteTarget = qBound<int64_t>(0, byteTargetRaw, fileSize - 1);
+                                }
 
-                                    qInfo() << "[seek-decoder] anchor byte-seek fallback"
-                                            << "targetMs=" << m_seekTargetMs
-                                            << "anchorMs=" << anchorMs
-                                            << "mappedAnchorMs=" << mappedAnchorMs
-                                            << "byteTarget=" << byteTarget
-                                            << "fileSize=" << fileSize
-                                            << "packetAligned=" << hasPacketAlignedTarget
-                                            << "source=" << m_currentSource;
+                                if (byteTarget >= 0) {
+                                    retryErr = seekByByteOffset(m_formatCtx, byteTarget);
+                                    if (retryErr >= 0) {
+                                        if (mappedAnchorMs >= 0)
+                                            discardReferenceMs = mappedAnchorMs;
+
+                                        qInfo() << "[seek-decoder] anchor byte-seek fallback"
+                                                << "targetMs=" << m_seekTargetMs
+                                                << "anchorMs=" << anchorMs
+                                                << "mappedAnchorMs=" << mappedAnchorMs
+                                                << "byteTarget=" << byteTarget
+                                                << "fileSize=" << fileSize
+                                                << "packetAligned=" << hasPacketAlignedTarget
+                                                << "source=" << m_currentSource;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    AVStream *seekStream = (m_streamIndex >= 0
-                        && m_streamIndex < static_cast<int>(m_formatCtx->nb_streams))
-                        ? m_formatCtx->streams[m_streamIndex]
-                        : nullptr;
-                    if (retryErr < 0 && seekStream) {
-                        const int64_t anchorStreamTs =
-                            av_rescale_q(anchorMs, AVRational{1, 1000}, seekStream->time_base);
-                        retryErr = avformat_seek_file(m_formatCtx,
-                                                      m_streamIndex,
-                                                      INT64_MIN,
-                                                      anchorStreamTs,
-                                                      anchorStreamTs,
-                                                      AVSEEK_FLAG_BACKWARD);
-                        if (retryErr < 0)
-                            retryErr = av_seek_frame(m_formatCtx,
-                                                     m_streamIndex,
-                                                     anchorStreamTs,
-                                                     AVSEEK_FLAG_BACKWARD);
-                        if (retryErr < 0)
+                        AVStream *seekStream = (m_streamIndex >= 0
+                            && m_streamIndex < static_cast<int>(m_formatCtx->nb_streams))
+                            ? m_formatCtx->streams[m_streamIndex]
+                            : nullptr;
+                        if (retryErr < 0 && seekStream) {
+                            const int64_t anchorStreamTs =
+                                av_rescale_q(anchorMs, AVRational{1, 1000}, seekStream->time_base);
                             retryErr = avformat_seek_file(m_formatCtx,
                                                           m_streamIndex,
                                                           INT64_MIN,
                                                           anchorStreamTs,
-                                                          INT64_MAX,
-                                                          AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
+                                                          anchorStreamTs,
+                                                          AVSEEK_FLAG_BACKWARD);
+                            if (retryErr < 0)
+                                retryErr = av_seek_frame(m_formatCtx,
+                                                         m_streamIndex,
+                                                         anchorStreamTs,
+                                                         AVSEEK_FLAG_BACKWARD);
+                        }
+                        if (retryErr < 0)
+                            retryErr = av_seek_frame(m_formatCtx, -1, anchorUs, AVSEEK_FLAG_BACKWARD);
+
+                        if (retryErr >= 0) {
+                            if (m_formatCtx->pb) {
+                                m_formatCtx->pb->eof_reached = 0;
+                                m_formatCtx->pb->error = 0;
+                            }
+
+                            avformat_flush(m_formatCtx);
+                            avcodec_flush_buffers(m_codecCtx);
+                            if (m_swrCtx) {
+                                swr_close(m_swrCtx);
+                                swr_init(m_swrCtx);
+                            }
+
+                            m_pcmQueue.clear();
+                            m_reachedEnd = false;
+                            m_endOfStreamEmitted = false;
+                            m_decoderFlushing = false;
+                            const qint64 discardMs = qMax<qint64>(0, m_seekTargetMs - discardReferenceMs);
+                            const int outRate = qMax(1, m_format.sampleRate());
+                            m_seekDiscardOutputFrames = (discardMs * outRate + 999) / 1000LL;
+                            m_seekDiscardActive = false;
+                            m_lastPacketTsMs = -1;
+                            m_seekUnknownFramesToDrop = 0;
+                            continue;
+                        }
                     }
-                    if (retryErr < 0)
-                        retryErr = av_seek_frame(m_formatCtx, -1, anchorUs, AVSEEK_FLAG_BACKWARD);
-                    if (retryErr < 0)
-                        retryErr = avformat_seek_file(m_formatCtx,
-                                                      -1,
-                                                      INT64_MIN,
-                                                      anchorUs,
-                                                      INT64_MAX,
-                                                      AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
 
-                    if (retryErr >= 0) {
-                        if (m_formatCtx->pb) {
-                            m_formatCtx->pb->eof_reached = 0;
-                            m_formatCtx->pb->error = 0;
-                        }
-
-                        avformat_flush(m_formatCtx);
-                        avcodec_flush_buffers(m_codecCtx);
-                        if (m_swrCtx) {
-                            swr_close(m_swrCtx);
-                            swr_init(m_swrCtx);
-                        }
-
-                        m_pcmQueue.clear();
-                        m_reachedEnd = false;
-                        m_endOfStreamEmitted = false;
-                        m_decoderFlushing = false;
-                        const qint64 discardMs = qMax<qint64>(0, m_seekTargetMs - discardReferenceMs);
-                        const int outRate = qMax(1, m_format.sampleRate());
-                        m_seekDiscardOutputFrames = (discardMs * outRate + 999) / 1000LL;
-                        m_seekDiscardActive = false;
-                        m_lastPacketTsMs = -1;
-                        m_seekUnknownFramesToDrop = 0;
-
-                        qInfo() << "[seek-decoder] anchor frame-discard preset"
-                            << "targetMs=" << m_seekTargetMs
-                            << "referenceMs=" << discardReferenceMs
-                            << "discardMs=" << discardMs
-                            << "discardFrames=" << m_seekDiscardOutputFrames
-                            << "source=" << m_currentSource;
+                    m_decoderFlushing = true;
+                    const int flushRet = avcodec_send_packet(m_codecCtx, nullptr);
+                    if (flushRet < 0 && flushRet != AVERROR(EAGAIN)) {
+                        m_reachedEnd = true;
+                        return false;
+                    }
+                } else if (readRet < 0) {
+                    m_reachedEnd = true;
+                    return false;
+                } else {
+                    if (m_packet->stream_index != m_streamIndex) {
+                        av_packet_unref(m_packet);
                         continue;
                     }
 
-                    qWarning() << "[seek-decoder] anchor retry failed"
-                               << avErrorToString(retryErr)
-                               << "targetMs=" << m_seekTargetMs
-                               << "anchorMs=" << anchorMs
-                               << "source=" << m_currentSource;
-                }
+                    m_lastPacketTsMs = -1;
+                    const int64_t packetTs = (m_packet->dts != AV_NOPTS_VALUE) ? m_packet->dts : m_packet->pts;
+                    if (packetTs != AV_NOPTS_VALUE) {
+                        AVStream *stream = m_formatCtx->streams[m_streamIndex];
+                        const int64_t streamStartOffset = (stream->start_time != AV_NOPTS_VALUE) ? stream->start_time : 0;
+                        m_lastPacketTsMs = qMax<qint64>(0, av_rescale_q(packetTs - streamStartOffset, stream->time_base, AVRational{1, 1000}));
+                    }
 
-                m_decoderFlushing = true;
-                const int flushRet = avcodec_send_packet(m_codecCtx, nullptr);
-                if (flushRet < 0 && flushRet != AVERROR(EAGAIN)) {
-                    qWarning() << "FFmpeg: flush send_packet failed" << avErrorToString(flushRet);
-                    m_reachedEnd = true;
-                    return false;
-                }
-            } else if (readRet < 0) {
-                qWarning() << "FFmpeg: av_read_frame failed" << avErrorToString(readRet);
-                m_reachedEnd = true;
-                return false;
-            } else {
-                if (m_packet->stream_index != m_streamIndex) {
-                    av_packet_unref(m_packet);
-                    continue;
-                }
+                    parsePacketGaplessMetadata();
 
-                m_lastPacketTsMs = -1;
-                const int64_t packetTs = (m_packet->dts != AV_NOPTS_VALUE)
-                    ? m_packet->dts
-                    : m_packet->pts;
-                if (packetTs != AV_NOPTS_VALUE) {
-                    AVStream *stream = m_formatCtx->streams[m_streamIndex];
-                    const int64_t streamStartOffset =
-                        (stream->start_time != AV_NOPTS_VALUE) ? stream->start_time : 0;
-                    const int64_t normalizedTs = packetTs - streamStartOffset;
-                    m_lastPacketTsMs = qMax<qint64>(0,
-                        av_rescale_q(normalizedTs, stream->time_base, AVRational{1, 1000}));
-                }
-
-                parsePacketGaplessMetadata();
-
-                const int sendRet = avcodec_send_packet(m_codecCtx, m_packet);
-                av_packet_unref(m_packet);
-                if (sendRet == AVERROR(EAGAIN)) {
-                    // Decoder queue is full; receive_frame below will drain it.
-                } else if (sendRet < 0) {
-                    qWarning() << "FFmpeg: avcodec_send_packet failed" << avErrorToString(sendRet);
-                    continue;
+                    const int sendRet = avcodec_send_packet(m_codecCtx, m_packet);
+                    if (sendRet == AVERROR(EAGAIN)) {
+                        m_packetPending = true;
+                    } else {
+                        m_packetPending = false;
+                        av_packet_unref(m_packet);
+                        if (sendRet < 0) continue;
+                    }
                 }
             }
         }
@@ -1434,6 +1417,7 @@ bool FfmpegDecoderBackend::decodeSomePcm()
                 m_reachedEnd = true;
                 return false;
             }
+            if (m_packetPending) return false; // Yield to avoid tight loop
             continue;
         }
         if (recvRet == AVERROR_EOF) {
@@ -1441,65 +1425,45 @@ bool FfmpegDecoderBackend::decodeSomePcm()
             return false;
         }
         if (recvRet < 0) {
-            qWarning() << "FFmpeg: avcodec_receive_frame failed" << avErrorToString(recvRet);
             m_reachedEnd = true;
             return false;
         }
 
         if (m_seekDiscardActive) {
             AVStream *stream = m_formatCtx->streams[m_streamIndex];
-            const qint64 bestTs = (m_frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                ? m_frame->best_effort_timestamp
-                : m_frame->pts;
-
-            const int64_t streamStartOffset =
-                (stream->start_time != AV_NOPTS_VALUE) ? stream->start_time : 0;
-
+            const qint64 bestTs = (m_frame->best_effort_timestamp != AV_NOPTS_VALUE) ? m_frame->best_effort_timestamp : m_frame->pts;
+            const int64_t streamStartOffset = (stream->start_time != AV_NOPTS_VALUE) ? stream->start_time : 0;
             qint64 frameStartMs = -1;
             if (bestTs != AV_NOPTS_VALUE) {
-                const int64_t normalizedTs = bestTs - streamStartOffset;
-                frameStartMs = av_rescale_q(normalizedTs, stream->time_base, AVRational{1, 1000});
-                frameStartMs = qMax<qint64>(0, frameStartMs);
+                frameStartMs = qMax<qint64>(0, av_rescale_q(bestTs - streamStartOffset, stream->time_base, AVRational{1, 1000}));
             } else if (m_lastPacketTsMs >= 0) {
                 frameStartMs = m_lastPacketTsMs;
             }
 
             if (frameStartMs >= 0) {
                 const int inRate = qMax(1, m_codecCtx->sample_rate);
-                const qint64 frameDurMs = qMax<qint64>(
-                    1,
-                    (static_cast<qint64>(m_frame->nb_samples) * 1000LL) / inRate);
-                const qint64 frameEndMs = frameStartMs + frameDurMs;
-
-                if (frameEndMs <= m_seekTargetMs) {
+                const qint64 frameDurMs = qMax<qint64>(1, (static_cast<qint64>(m_frame->nb_samples) * 1000LL) / inRate);
+                if (frameStartMs + frameDurMs <= m_seekTargetMs) {
                     av_frame_unref(m_frame);
                     continue;
                 }
-
                 if (frameStartMs < m_seekTargetMs) {
                     const qint64 dropMs = m_seekTargetMs - frameStartMs;
-                    const int outRate = qMax(1, m_format.sampleRate());
-                    m_seekDiscardOutputFrames = qMax<qint64>(
-                        0,
-                        (dropMs * outRate + 999) / 1000LL);
+                    m_seekDiscardOutputFrames = qMax<qint64>(0, (dropMs * qMax(1, m_format.sampleRate()) + 999) / 1000LL);
                 }
-
                 m_seekDiscardActive = false;
-                m_seekUnknownFramesToDrop = 0;
             } else if (m_seekUnknownFramesToDrop > 0) {
                 --m_seekUnknownFramesToDrop;
                 av_frame_unref(m_frame);
                 continue;
             } else {
-                m_seekDiscardOutputFrames = 0;
                 m_seekDiscardActive = false;
             }
         }
 
         const bool converted = convertFrameToPcm();
         av_frame_unref(m_frame);
-        if (converted)
-            return true;
+        if (converted) return true;
     }
 #endif
 }
@@ -1534,10 +1498,7 @@ bool FfmpegDecoderBackend::convertFrameToPcm()
                                           dstSamples,
                                           outSampleFmt,
                                           0);
-    if (allocRet < 0) {
-        qWarning() << "FFmpeg: av_samples_alloc failed" << avErrorToString(allocRet);
-        return false;
-    }
+    if (allocRet < 0) return false;
 
     const int converted = swr_convert(m_swrCtx,
                                       &dstData,
@@ -1545,7 +1506,6 @@ bool FfmpegDecoderBackend::convertFrameToPcm()
                                       const_cast<const uint8_t **>(m_frame->extended_data),
                                       m_frame->nb_samples);
     if (converted < 0) {
-        qWarning() << "FFmpeg: swr_convert failed" << avErrorToString(converted);
         av_freep(&dstData);
         return false;
     }
@@ -1650,11 +1610,7 @@ QByteArray FfmpegDecoderBackend::applyPlaybackRate(const QByteArray &chunk, int 
                                           dstSamples,
                                           sampleFmt,
                                           0);
-    if (allocRet < 0) {
-        qWarning() << "FFmpeg: rate av_samples_alloc failed" << avErrorToString(allocRet)
-                   << "dstSamples=" << dstSamples;
-        return chunk;
-    }
+    if (allocRet < 0) return chunk;
 
     const uint8_t *srcData = reinterpret_cast<const uint8_t *>(chunk.constData());
     const int converted = swr_convert(m_rateSwrCtx,
@@ -1663,9 +1619,6 @@ QByteArray FfmpegDecoderBackend::applyPlaybackRate(const QByteArray &chunk, int 
                                       &srcData,
                                       static_cast<int>(inputFrames));
     if (converted < 0) {
-        qWarning() << "FFmpeg: rate swr_convert failed" << avErrorToString(converted)
-                   << "rate=" << rate
-                   << "inFrames=" << inputFrames;
         av_freep(&dstData);
         resetPlaybackRateResampler();
         return chunk;
@@ -1696,161 +1649,59 @@ void FfmpegDecoderBackend::parsePacketGaplessMetadata()
 
     const qint64 skipInputSamples = static_cast<qint64>(AV_RL32(sideData));
     const qint64 discardInputSamples = static_cast<qint64>(AV_RL32(sideData + 4));
-    const qint64 skipOutputFrames = inputSamplesToOutputFrames(skipInputSamples);
-    const qint64 discardOutputFrames = inputSamplesToOutputFrames(discardInputSamples);
-    const qint64 sampleRate = static_cast<qint64>(qMax(1, m_format.sampleRate()));
-    const qint64 maxLeadingTrimFrames =
-        (kMaxReasonableGaplessLeadingTrimMs * sampleRate) / 1000LL;
-    const qint64 maxTrailingTrimFrames =
-        (kMaxReasonableGaplessTrailingTrimMs * sampleRate) / 1000LL;
-
-    if (skipOutputFrames > maxLeadingTrimFrames || discardOutputFrames > maxTrailingTrimFrames) {
-        qWarning() << "FFmpeg: ignoring suspicious gapless side-data trim"
-                   << "skipFrames=" << skipOutputFrames
-                   << "discardFrames=" << discardOutputFrames
-                   << "maxLeadingFrames=" << maxLeadingTrimFrames
-                   << "maxTrailingFrames=" << maxTrailingTrimFrames
-                   << "source=" << m_currentSource;
-        return;
-    }
 
     bool changed = false;
-    bool canAdoptLeadingTrim = (m_allowGaplessLeadingTrimAdoption
-                                && m_seekTargetMs <= 0
-                                && m_emittedFrames == 0
-                                && m_positionMs <= 0);
-    if (canAdoptLeadingTrim && m_formatCtx && m_streamIndex >= 0
-        && m_streamIndex < static_cast<int>(m_formatCtx->nb_streams)) {
-        AVStream *stream = m_formatCtx->streams[m_streamIndex];
-        const int64_t ts = (m_packet->dts != AV_NOPTS_VALUE)
-            ? m_packet->dts
-            : m_packet->pts;
-        if (ts != AV_NOPTS_VALUE) {
-            const int64_t streamStartOffset =
-                (stream->start_time != AV_NOPTS_VALUE) ? stream->start_time : 0;
-            const qint64 packetStartMs = av_rescale_q(ts - streamStartOffset,
-                                                      stream->time_base,
-                                                      AVRational{1, 1000});
-            if (packetStartMs > 250)
-                canAdoptLeadingTrim = false;
-        }
+    if (skipInputSamples > 0 && m_leadingTrimFrames == 0) {
+        m_leadingTrimFrames = inputSamplesToOutputFrames(skipInputSamples);
+        m_pendingLeadingTrimFrames = m_leadingTrimFrames;
+        changed = true;
     }
-
-    if (skipOutputFrames > 0 && m_leadingTrimFrames == 0) {
-        if (canAdoptLeadingTrim) {
-            m_leadingTrimFrames = skipOutputFrames;
-            if (m_emittedFrames == 0 && m_positionMs == 0)
-                m_pendingLeadingTrimFrames = skipOutputFrames;
-            qInfo() << "FFmpeg: accepted gapless leading trim"
-                    << "frames=" << skipOutputFrames
-                    << "trimMs=" << ((skipOutputFrames * 1000LL) / qMax<qint64>(1, sampleRate))
-                    << "source=" << m_currentSource;
-            changed = true;
-        }
-    }
-
-    if (discardOutputFrames > m_trailingTrimFrames) {
-        m_trailingTrimFrames = discardOutputFrames;
-        m_pendingTrailingTrimFrames = qMax(m_pendingTrailingTrimFrames, discardOutputFrames);
+    if (discardInputSamples > 0 && m_trailingTrimFrames == 0) {
+        m_trailingTrimFrames = inputSamplesToOutputFrames(discardInputSamples);
+        m_pendingTrailingTrimFrames = m_trailingTrimFrames;
         changed = true;
     }
 
-    if (!changed)
-        return;
-
-    updateDurationForGaplessTrim();
+    if (changed) updateDurationForGaplessTrim();
 #endif
 }
 
 void FfmpegDecoderBackend::applyQueuedLeadingTrim()
 {
-    if (m_pendingLeadingTrimFrames <= 0)
-        return;
-    if (m_pcmQueue.isEmpty())
-        return;
-
+    if (m_pendingLeadingTrimFrames <= 0 || m_pcmQueue.isEmpty()) return;
     const int frameBytes = qMax(1, m_format.bytesPerFrame());
-    const qint64 queuedFrames = m_pcmQueue.size() / frameBytes;
-    if (queuedFrames <= 0)
-        return;
-
-    const qint64 dropFrames = qMin(m_pendingLeadingTrimFrames, queuedFrames);
-    const int dropBytes = static_cast<int>(dropFrames * frameBytes);
-    if (dropBytes <= 0)
-        return;
-
-    m_pcmQueue.remove(0, dropBytes);
+    const qint64 dropFrames = qMin(m_pendingLeadingTrimFrames, static_cast<qint64>(m_pcmQueue.size() / frameBytes));
+    m_pcmQueue.remove(0, static_cast<int>(dropFrames * frameBytes));
     m_pendingLeadingTrimFrames -= dropFrames;
 }
 
 void FfmpegDecoderBackend::applyQueuedTrailingTrimIfReady()
 {
-    if (!m_reachedEnd)
-        return;
-
-    if (m_pendingTrailingTrimFrames <= 0)
-        return;
-
-    if (m_pcmQueue.isEmpty()) {
-        m_pendingTrailingTrimFrames = 0;
-        return;
-    }
-
+    if (!m_reachedEnd || m_pendingTrailingTrimFrames <= 0 || m_pcmQueue.isEmpty()) return;
     const int frameBytes = qMax(1, m_format.bytesPerFrame());
-    const qint64 queuedFrames = m_pcmQueue.size() / frameBytes;
-    if (queuedFrames <= 0)
-        return;
-
-    const qint64 dropFrames = qMin(m_pendingTrailingTrimFrames, queuedFrames);
-    const int dropBytes = static_cast<int>(dropFrames * frameBytes);
-    if (dropBytes <= 0)
-        return;
-
-    m_pcmQueue.chop(dropBytes);
+    const qint64 dropFrames = qMin(m_pendingTrailingTrimFrames, static_cast<qint64>(m_pcmQueue.size() / frameBytes));
+    m_pcmQueue.chop(static_cast<int>(dropFrames * frameBytes));
     m_pendingTrailingTrimFrames -= dropFrames;
 }
 
 void FfmpegDecoderBackend::updateDurationForGaplessTrim()
 {
-    if (m_rawDurationMs <= 0)
-        return;
-
-    const qint64 totalTrimFrames = m_leadingTrimFrames + m_trailingTrimFrames;
-    if (totalTrimFrames <= 0)
-        return;
-
     const int sampleRate = qMax(1, m_format.sampleRate());
-    const qint64 trimMs = (totalTrimFrames * 1000LL) / sampleRate;
-    if (trimMs > kMaxReasonableGaplessTotalTrimMs) {
-        qWarning() << "FFmpeg: ignoring suspicious total gapless trim"
-                   << "trimMs=" << trimMs
-                   << "rawDurationMs=" << m_rawDurationMs
-                   << "source=" << m_currentSource;
-        return;
+    const qint64 trimMs = ((m_leadingTrimFrames + m_trailingTrimFrames) * 1000LL) / sampleRate;
+    if (m_rawDurationMs > trimMs) {
+        m_durationMs = m_rawDurationMs - trimMs;
+        emit durationChanged(m_durationMs);
     }
-
-    const qint64 trimmedDurationMs = qMax<qint64>(0, m_rawDurationMs - trimMs);
-
-    if (trimmedDurationMs == m_durationMs)
-        return;
-
-    m_durationMs = trimmedDurationMs;
-    emit durationChanged(m_durationMs);
 }
 
 qint64 FfmpegDecoderBackend::inputSamplesToOutputFrames(qint64 inputSamples) const
 {
-    if (inputSamples <= 0)
-        return 0;
-
+    if (inputSamples <= 0) return 0;
 #ifndef MUSICPLAYER_HAS_FFMPEG
     return inputSamples;
 #else
-    const int inRate = (m_codecCtx && m_codecCtx->sample_rate > 0)
-        ? m_codecCtx->sample_rate
-        : qMax(1, m_format.sampleRate());
-    const int outRate = qMax(1, m_format.sampleRate());
-    return av_rescale_rnd(inputSamples, outRate, inRate, AV_ROUND_UP);
+    const int inRate = (m_codecCtx && m_codecCtx->sample_rate > 0) ? m_codecCtx->sample_rate : qMax(1, m_format.sampleRate());
+    return av_rescale_rnd(inputSamples, qMax(1, m_format.sampleRate()), inRate, AV_ROUND_UP);
 #endif
 }
 
@@ -1859,8 +1710,7 @@ int FfmpegDecoderBackend::avToQtSampleFormatBytes(int avSampleFmt)
 #ifdef MUSICPLAYER_HAS_FFMPEG
     return qMax(0, av_get_bytes_per_sample(static_cast<AVSampleFormat>(avSampleFmt)));
 #else
-    Q_UNUSED(avSampleFmt);
-    return 0;
+    Q_UNUSED(avSampleFmt); return 0;
 #endif
 }
 
@@ -1869,56 +1719,22 @@ void FfmpegDecoderBackend::preloadInitialPackets()
 #ifndef MUSICPLAYER_HAS_FFMPEG
     return;
 #else
-    if (!m_formatCtx || !m_codecCtx || !m_packet || !m_swrCtx || m_streamIndex < 0)
-        return;
-
-    // Decode a small amount of audio ahead to reduce initial playback latency
+    if (!m_formatCtx || !m_codecCtx || !m_packet || !m_swrCtx || m_streamIndex < 0) return;
     int decodedFrames = 0;
-    const int maxFramesToDecode = 128; // ~3ms at 44.1kHz
-
-    for (int i = 0; i < 50 && decodedFrames < maxFramesToDecode; ++i) {
-        const int readRet = av_read_frame(m_formatCtx, m_packet);
-        if (readRet == AVERROR_EOF) {
-            // Seek back to start for actual playback
-            av_seek_frame(m_formatCtx, m_streamIndex, 0, AVSEEK_FLAG_BACKWARD);
-            break;
-        }
-        if (readRet < 0) {
-            break;
-        }
-
-        if (m_packet->stream_index != m_streamIndex) {
-            av_packet_unref(m_packet);
-            continue;
-        }
-
-        const int sendRet = avcodec_send_packet(m_codecCtx, m_packet);
+    for (int i = 0; i < 50 && decodedFrames < 128; ++i) {
+        if (av_read_frame(m_formatCtx, m_packet) < 0) break;
+        if (m_packet->stream_index != m_streamIndex) { av_packet_unref(m_packet); continue; }
+        if (avcodec_send_packet(m_codecCtx, m_packet) == AVERROR(EAGAIN)) break;
         av_packet_unref(m_packet);
-
-        if (sendRet < 0 && sendRet != AVERROR(EAGAIN))
-            continue;
-
-        for (;;) {
-            const int recvRet = avcodec_receive_frame(m_codecCtx, m_frame);
-            if (recvRet == AVERROR(EAGAIN))
-                break;
-            if (recvRet < 0)
-                goto preload_done;
-
+        while (avcodec_receive_frame(m_codecCtx, m_frame) >= 0) {
             convertFrameToPcm();
             av_frame_unref(m_frame);
             decodedFrames++;
         }
     }
-
-preload_done:
-    // Seek back to beginning for actual playback
     av_seek_frame(m_formatCtx, m_streamIndex, 0, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(m_codecCtx);
-    if (m_swrCtx) {
-        swr_close(m_swrCtx);
-        swr_init(m_swrCtx);
-    }
+    if (m_swrCtx) { swr_close(m_swrCtx); swr_init(m_swrCtx); }
     m_pcmQueue.clear();
 #endif
 }

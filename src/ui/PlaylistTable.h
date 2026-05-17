@@ -5,6 +5,9 @@
 #include <QStyledItemDelegate>
 #include <QHeaderView>
 #include <QPainter>
+#include <QElapsedTimer>
+
+class QTimer;
 
 class PlaylistTable : public QTableWidget
 {
@@ -17,6 +20,7 @@ public:
     int playingRow() const { return m_playingRow; }
     int dropIndicatorRow() const { return m_dropIndicatorRow; }
     void setPlayingRow(int row);
+    void resetSmoothScroll();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -29,6 +33,7 @@ protected:
     void leaveEvent(QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 signals:
     void filesDropped(const QStringList &files, int targetRow);
@@ -40,6 +45,7 @@ private:
     void onSectionPressed(int logicalIndex);
     void onSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
     void applyIdealWidths();
+    void tickSmoothScroll();
     int rightmostVisibleLogicalIndex() const;
     int rightmostVisibleVisualIndex() const;
 
@@ -54,6 +60,9 @@ private:
     int m_lockedRightmostLogical = -1;
     QVector<int> m_idealWidths;
     QList<int> m_draggedRows;
+    int m_scrollTarget = 0;
+    QTimer *m_scrollTimer = nullptr;
+    QElapsedTimer m_scrollClock;
 };
 
 class RowHoverDelegate : public QStyledItemDelegate

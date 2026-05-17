@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "GaplessAudioEngine.h"
+#include "TrackItem.h"
 #include <QAudioFormat>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -100,6 +101,32 @@ void SettingsDialog::buildAppearancePage()
     rowHeightRow->addStretch();
     rowHeightRow->addWidget(m_rowHeightSpin);
     layout->addLayout(rowHeightRow);
+
+    QFrame *sep2 = new QFrame();
+    sep2->setFrameShape(QFrame::HLine);
+    sep2->setStyleSheet("color: #3d3d3d;");
+    layout->addWidget(sep2);
+
+    QHBoxLayout *cacheRow = new QHBoxLayout();
+    QLabel *cacheLabel = new QLabel("Clear Metadata Cache");
+    cacheLabel->setStyleSheet("font-size: 13px; color: #ccc;");
+    QPushButton *btnCache = new QPushButton("Clear Cache");
+    btnCache->setStyleSheet("QPushButton { background: #333; border: 1px solid #555; color: #ccc; font-size: 13px; padding: 6px 12px; border-radius: 4px; }"
+                            "QPushButton:hover { background: #444; color: white; }");
+    cacheRow->addWidget(cacheLabel);
+    cacheRow->addStretch();
+    cacheRow->addWidget(btnCache);
+    layout->addLayout(cacheRow);
+
+    connect(btnCache, &QPushButton::clicked, this, [this, btnCache]() {
+        TrackItem::clearTrackMetadataCache();
+        btnCache->setText("Cleared!");
+        btnCache->setEnabled(false);
+        QTimer::singleShot(2000, this, [btnCache]() {
+            btnCache->setText("Clear Cache");
+            btnCache->setEnabled(true);
+        });
+    });
 
     layout->addStretch();
     m_pages->addWidget(page);

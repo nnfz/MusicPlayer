@@ -111,7 +111,10 @@ private:
     void layoutCard();
     void updateCoverWidget();
 
+    class FullscreenBackgroundGL;
+
     QWidget               *m_card         { nullptr };
+    FullscreenBackgroundGL *m_bgWidget    { nullptr };
     QGraphicsOpacityEffect *m_cardOpacity  { nullptr };
 
     QLabel                *m_coverLabel   { nullptr };
@@ -133,12 +136,13 @@ private:
 
     QTimer                *m_animTimer    { nullptr };
     QParallelAnimationGroup *m_closeAnim  { nullptr };
+    QVariantAnimation     *m_bgFadeAnim   { nullptr };
 
     QPixmap                m_rawCover;
     int                    m_durationMs   { 0 };
     bool                   m_userSeeking  { false };
     bool                   m_isOpen       { false };
-    int                    m_volumeValue  { 0 };
+    int                    m_volumeValue  { 0 };c
 
     QVector<QColor>        m_palette;
     QImage                 m_noiseFrame;

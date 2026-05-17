@@ -45,6 +45,9 @@ public:
     QString filePath() const { return m_metadata.filePath; }
     bool isMetadataLoaded() const { return m_metadataLoaded; }
     void ensureMetadataLoaded();
+    static void clearTrackMetadataCache();
+    bool isCoverPlaceholder() const;
+    bool applyMetadataCover(const QImage &cover);
 
     void loadFullMetadata(const QMediaMetaData &metaData);
 

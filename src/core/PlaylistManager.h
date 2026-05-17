@@ -26,6 +26,7 @@ public:
     QString createPlaylist(const QString &name);
     void renamePlaylist(const QString &id, const QString &newName);
     void deletePlaylist(const QString &id);
+    void reorderPlaylists(const QStringList &ids);
 
     PlaylistInfo *playlist(const QString &id);
     void setTracks(const QString &id, const QStringList &paths);
@@ -49,6 +50,7 @@ private:
     QString playlistFilePath(const QString &id) const;
     void savePlaylist(const PlaylistInfo &pl);
     void deletePlaylistFile(const QString &id);
+    void saveOrder();
 
     QList<PlaylistInfo> m_playlists;
     QString m_storageDir;

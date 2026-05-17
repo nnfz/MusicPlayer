@@ -13,6 +13,11 @@
 #include <QEasingCurve>
 #include <QLinearGradient>
 #include <QShortcut>
+#include <QOpenGLWidget>
+#include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
+#include <QVector>
+#include <algorithm>
 #include <cmath>
 
 // ══════════════════════════════════════════════════════════════════════
@@ -58,6 +63,49 @@ static float fbm(float x, float y, float t) {
     return gnoise(x + ox, y + oy);
 }
 
+static void boxBlurRgb(QImage &img, int radius)
+{
+    if (radius <= 0 || img.isNull())
+        return;
+
+    const int w = img.width();
+    const int h = img.height();
+    if (w <= 0 || h <= 0)
+        return;
+
+    QImage temp(w, h, QImage::Format_RGB32);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int r = 0, g = 0, b = 0, count = 0;
+            for (int k = -radius; k <= radius; ++k) {
+                const int sx = qBound(0, x + k, w - 1);
+                const QRgb px = img.pixel(sx, y);
+                r += qRed(px);
+                g += qGreen(px);
+                b += qBlue(px);
+                ++count;
+            }
+            temp.setPixel(x, y, qRgb(r / count, g / count, b / count));
+        }
+    }
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int r = 0, g = 0, b = 0, count = 0;
+            for (int k = -radius; k <= radius; ++k) {
+                const int sy = qBound(0, y + k, h - 1);
+                const QRgb px = temp.pixel(x, sy);
+                r += qRed(px);
+                g += qGreen(px);
+                b += qBlue(px);
+                ++count;
+            }
+            img.setPixel(x, y, qRgb(r / count, g / count, b / count));
+        }
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,6 +125,153 @@ static QPixmap rounded(const QPixmap &src, int r)
     QPainterPath path; path.addRoundedRect(out.rect(), r, r);
     p.setClipPath(path); p.drawPixmap(0, 0, src); return out;
 }
+
+// ---------------------------------------------------------------------------
+// OpenGL background
+// ---------------------------------------------------------------------------
+
+class FullscreenPlayer::FullscreenBackgroundGL
+    : public QOpenGLWidget
+    , protected QOpenGLFunctions
+{
+public:
+    explicit FullscreenBackgroundGL(QWidget *parent = nullptr)
+        : QOpenGLWidget(parent)
+    {
+        setUpdateBehavior(QOpenGLWidget::NoPartialUpdate);
+        setAutoFillBackground(false);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+    void setPalette(const QVector<QColor> &colors)
+    {
+        m_palette = colors;
+        update();
+    }
+
+    void setTime(float t)
+    {
+        m_time = t;
+        update();
+    }
+
+protected:
+    void initializeGL() override
+    {
+        initializeOpenGLFunctions();
+
+        static const char *kVert =
+            "#version 330 core\n"
+            "out vec2 v_uv;\n"
+            "const vec2 verts[4] = vec2[](\n"
+            "  vec2(-1.0, -1.0),\n"
+            "  vec2( 1.0, -1.0),\n"
+            "  vec2(-1.0,  1.0),\n"
+            "  vec2( 1.0,  1.0));\n"
+            "void main() {\n"
+            "  vec2 pos = verts[gl_VertexID];\n"
+            "  v_uv = pos * 0.5 + 0.5;\n"
+            "  gl_Position = vec4(pos, 0.0, 1.0);\n"
+            "}\n";
+
+        static const char *kFrag =
+            "#version 330 core\n"
+            "in vec2 v_uv;\n"
+            "out vec4 fragColor;\n"
+            "uniform vec3 u_color0;\n"
+            "uniform vec3 u_color1;\n"
+            "uniform vec3 u_color2;\n"
+            "uniform float u_time;\n"
+            "float hash(vec2 p) {\n"
+            "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
+            "}\n"
+            "float noise(vec2 p) {\n"
+            "  vec2 i = floor(p);\n"
+            "  vec2 f = fract(p);\n"
+            "  float a = hash(i);\n"
+            "  float b = hash(i + vec2(1.0, 0.0));\n"
+            "  float c = hash(i + vec2(0.0, 1.0));\n"
+            "  float d = hash(i + vec2(1.0, 1.0));\n"
+            "  vec2 u = f * f * (3.0 - 2.0 * f);\n"
+            "  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;\n"
+            "}\n"
+            "float noiseBlur(vec2 p) {\n"
+            "  vec2 o = vec2(0.008, 0.008);\n"
+            "  float n = 0.0;\n"
+            "  n += noise(p);\n"
+            "  n += noise(p + vec2(o.x, 0.0));\n"
+            "  n += noise(p - vec2(o.x, 0.0));\n"
+            "  n += noise(p + vec2(0.0, o.y));\n"
+            "  n += noise(p - vec2(0.0, o.y));\n"
+            "  return n * 0.2;\n"
+            "}\n"
+            "vec3 pickColor(int idx, vec3 c0, vec3 c1, vec3 c2) {\n"
+            "  return idx == 0 ? c0 : (idx == 1 ? c1 : c2);\n"
+            "}\n"
+            "void main() {\n"
+            "  vec2 p = v_uv * 1.6;\n"
+            "  float t = u_time;\n"
+            "  float n0 = noiseBlur(p + vec2(0.0, 0.0) + vec2(t * 0.10, t * 0.08));\n"
+            "  float n1 = noiseBlur(p + vec2(4.6, 2.3) + vec2(-t * 0.07, t * 0.06));\n"
+            "  float n2 = noiseBlur(p + vec2(8.4, 5.1) + vec2(t * 0.05, -t * 0.04));\n"
+            "  n0 = n0 * n0 * (3.0 - 2.0 * n0);\n"
+            "  n1 = n1 * n1 * (3.0 - 2.0 * n1);\n"
+            "  n2 = n2 * n2 * (3.0 - 2.0 * n2);\n"
+            "  float w0 = pow(n0, 2.2);\n"
+            "  float w1 = pow(n1, 2.2);\n"
+            "  float w2 = pow(n2, 2.2);\n"
+            "  int maxIdx = 0;\n"
+            "  int secondIdx = 1;\n"
+            "  if (w1 > w0) { maxIdx = 1; secondIdx = 0; }\n"
+            "  if (w2 > (maxIdx == 0 ? w0 : w1)) { secondIdx = maxIdx; maxIdx = 2; }\n"
+            "  else if (w2 > (secondIdx == 0 ? w0 : w1)) { secondIdx = 2; }\n"
+            "  float wa = (maxIdx == 0 ? w0 : (maxIdx == 1 ? w1 : w2));\n"
+            "  float wb = (secondIdx == 0 ? w0 : (secondIdx == 1 ? w1 : w2));\n"
+            "  float sum = wa + wb;\n"
+            "  if (sum < 0.0001) sum = 1.0;\n"
+            "  vec3 c0 = u_color0;\n"
+            "  vec3 c1 = u_color1;\n"
+            "  vec3 c2 = u_color2;\n"
+            "  vec3 a = pickColor(maxIdx, c0, c1, c2);\n"
+            "  vec3 b = pickColor(secondIdx, c0, c1, c2);\n"
+            "  vec3 col = (a * wa + b * wb) / sum;\n"
+            "  col *= 0.78;\n"
+            "  fragColor = vec4(col, 1.0);\n"
+            "}\n";
+
+        m_program.addShaderFromSourceCode(QOpenGLShader::Vertex, kVert);
+        m_program.addShaderFromSourceCode(QOpenGLShader::Fragment, kFrag);
+        m_program.link();
+    }
+
+    void paintGL() override
+    {
+        glViewport(0, 0, width(), height());
+        glClearColor(0.07f, 0.07f, 0.07f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        if (!m_program.isLinked())
+            return;
+
+        QVector<QColor> colors = m_palette;
+        if (colors.size() < 3)
+            colors = { QColor(180, 60, 80), QColor(60, 80, 180), QColor(80, 160, 120) };
+
+        m_program.bind();
+        m_program.setUniformValue("u_time", m_time);
+        m_program.setUniformValue("u_color0", colors[0].redF(), colors[0].greenF(), colors[0].blueF());
+        m_program.setUniformValue("u_color1", colors[1].redF(), colors[1].greenF(), colors[1].blueF());
+        m_program.setUniformValue("u_color2", colors[2].redF(), colors[2].greenF(), colors[2].blueF());
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        m_program.release();
+    }
+
+private:
+    QOpenGLShaderProgram m_program;
+    QVector<QColor> m_palette;
+    float m_time = 0.0f;
+};
 
 
 // ---------------------------------------------------------------------------
@@ -196,7 +391,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     hide();
 
     m_animTimer = new QTimer(this);
-    m_animTimer->setInterval(33);
+    m_animTimer->setInterval(16);
     connect(m_animTimer, &QTimer::timeout, this, &FullscreenPlayer::animateTick);
 
     m_card = new QWidget(this);
@@ -205,6 +400,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_cardOpacity = new QGraphicsOpacityEffect(m_card);
     m_cardOpacity->setOpacity(0.0);
     m_card->setGraphicsEffect(m_cardOpacity);
+
+    m_bgWidget = new FullscreenBackgroundGL(this);
+    m_bgWidget->setGeometry(rect());
+    m_bgWidget->lower();
 
     m_coverLabel = new QLabel(m_card);
     m_coverLabel->setFixedSize(320, 320);
@@ -370,13 +569,16 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     m_playBtn->setFocusPolicy(Qt::NoFocus);
     m_nextBtn->setFocusPolicy(Qt::NoFocus);
 
+    extractPalette(m_rawCover);
+    if (m_bgWidget)
+        m_bgWidget->setPalette(m_palette);
+
     setGeometry(parentWidget()->rect());
     raise(); show();
     activateWindow();
     setFocus(Qt::ActiveWindowFocusReason);
     grabKeyboard();
-    extractPalette(m_rawCover);
-    updateNoiseFrame();
+    update();
 
     m_card->adjustSize();
     layoutCard();
@@ -426,7 +628,6 @@ void FullscreenPlayer::closeOverlay()
     if (!m_isOpen) return;
     m_isOpen = false;
     releaseKeyboard();
-    m_animTimer->stop();
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
 
     for (QWidget *w : {(QWidget *)m_coverLabel, (QWidget *)m_titleLabel, (QWidget *)m_artistLabel,
@@ -493,7 +694,8 @@ void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title,
     layoutCard();
     if (isVisible()) {
         extractPalette(m_rawCover);
-        updateNoiseFrame();
+        if (m_bgWidget)
+            m_bgWidget->setPalette(m_palette);
     }
 }
 
@@ -571,43 +773,116 @@ void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
 {
     m_palette.clear();
     if (albumArt.isNull()) {
-        m_palette = { {180, 60, 80}, {60, 80, 180}, {80, 160, 120}, {140, 60, 160} };
+        m_palette = { {180, 60, 80}, {60, 80, 180}, {80, 160, 120} };
         return;
     }
 
-    QImage img = albumArt.scaled(32, 32, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).toImage();
+    QImage img = albumArt.scaled(48, 48, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                     .toImage()
+                     .convertToFormat(QImage::Format_ARGB32);
 
-    auto boosted = [](QColor c) -> QColor {
-        int h, s, v;
-        c.getHsv(&h, &s, &v);
-        s = qMin(255, s + 80);
-        v = qBound(60, v, 220);
-        return QColor::fromHsv(h, s, v);
+    struct Bin {
+        int count = 0;
+        int rSum = 0;
+        int gSum = 0;
+        int bSum = 0;
     };
 
-    const QPoint pts[4] = { {6, 6}, {24, 6}, {6, 24}, {24, 24} };
-    for (auto &p : pts)
-        m_palette.append(boosted(QColor(img.pixel(p.x(), p.y()))));
+    QVector<Bin> bins(1 << 15);
+
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x) {
+            const QColor c = QColor::fromRgba(line[x]);
+            if (c.alpha() < 16)
+                continue;
+            const int r5 = c.red() >> 3;
+            const int g5 = c.green() >> 3;
+            const int b5 = c.blue() >> 3;
+            const int key = (r5 << 10) | (g5 << 5) | b5;
+            Bin &bin = bins[key];
+            bin.count++;
+            bin.rSum += c.red();
+            bin.gSum += c.green();
+            bin.bSum += c.blue();
+        }
+    }
+
+    struct BinColor {
+        QColor color;
+        int count = 0;
+    };
+
+    QVector<BinColor> colors;
+    colors.reserve(512);
+    for (const Bin &bin : bins) {
+        if (bin.count <= 0)
+            continue;
+        colors.append({
+            QColor(bin.rSum / bin.count, bin.gSum / bin.count, bin.bSum / bin.count),
+            bin.count
+        });
+    }
+
+    if (colors.isEmpty()) {
+        m_palette = { {180, 60, 80}, {60, 80, 180}, {80, 160, 120} };
+        return;
+    }
+
+    std::sort(colors.begin(), colors.end(), [](const BinColor &a, const BinColor &b) {
+        return a.count > b.count;
+    });
+
+    const QColor c1 = colors[0].color;
+    const QColor c2 = (colors.size() > 1) ? colors[1].color : c1;
+
+    auto colorDistance = [](const QColor &a, const QColor &b) -> float {
+        const float dr = a.redF() - b.redF();
+        const float dg = a.greenF() - b.greenF();
+        const float db = a.blueF() - b.blueF();
+        const float rgb = std::sqrt(dr * dr + dg * dg + db * db);
+        const float lumA = a.redF() * 0.2126f + a.greenF() * 0.7152f + a.blueF() * 0.0722f;
+        const float lumB = b.redF() * 0.2126f + b.greenF() * 0.7152f + b.blueF() * 0.0722f;
+        const float lum = qAbs(lumA - lumB);
+        return rgb * 0.75f + lum * 0.25f;
+    };
+
+    QColor c3 = c2;
+    if (colors.size() > 2) {
+        float bestScore = -1.0f;
+        for (int i = 2; i < colors.size(); ++i) {
+            const QColor c = colors[i].color;
+            const float d1 = colorDistance(c, c1);
+            const float d2 = colorDistance(c, c2);
+            const float score = qMin(d1, d2);
+            if (score > bestScore) {
+                bestScore = score;
+                c3 = c;
+            }
+        }
+    }
+
+    m_palette = { c1, c2, c3 };
 }
 
 // ---------------------------------------------------------------------------
 
 void FullscreenPlayer::updateNoiseFrame()
 {
-    const int NW = 80, NH = 45;
+    const int NW = 160, NH = 90;
     QImage frame(NW, NH, QImage::Format_RGB32);
 
-    if (m_palette.size() < 4) { frame.fill(Qt::black); m_noiseFrame = frame; return; }
+    if (m_palette.size() < 3) { frame.fill(Qt::black); m_noiseFrame = frame; return; }
 
-    float pr[4], pg[4], pb[4];
-    for (int i = 0; i < 4; i++) {
+    float pr[3], pg[3], pb[3];
+    for (int i = 0; i < 3; i++) {
         pr[i] = m_palette[i].redF();
         pg[i] = m_palette[i].greenF();
         pb[i] = m_palette[i].blueF();
     }
 
     const float t  = m_phase;
-    const float sc = 1.2f;   // ← пространственная частота: меньше = крупнее пятна
+    const float sc = 1.6f;   // ← пространственная частота: меньше = крупнее пятна
     auto sm = [](float x) { return x*x*(3.f-2.f*x); };
 
     for (int y = 0; y < NH; y++) {
@@ -621,21 +896,39 @@ void FullscreenPlayer::updateNoiseFrame()
             float wx = gnoise(px + 0.0f, py + 0.0f + t * 0.10f) - 0.5f;
             float wy = gnoise(px + 3.7f, py + 1.9f + t * 0.08f) - 0.5f;
 
-            // финальное значение — крупные плавные пятна
-            float f = gnoise(px + wx * 0.8f + t * 0.12f,
-                             py + wy * 0.8f + t * 0.09f);
+            float n0 = gnoise(px + wx * 0.8f + t * 0.10f,
+                              py + wy * 0.8f + t * 0.08f);
+            float n1 = gnoise(px + 4.6f + wx * 0.7f - t * 0.07f,
+                              py + 2.3f + wy * 0.7f + t * 0.06f);
+            float n2 = gnoise(px + 8.4f - wx * 0.6f + t * 0.05f,
+                              py + 5.1f - wy * 0.6f - t * 0.04f);
 
-            float R, G, B;
-            if (f < 0.333f) {
-                float s = sm(f / 0.333f);
-                R = _mix(pr[0],pr[1],s); G = _mix(pg[0],pg[1],s); B = _mix(pb[0],pb[1],s);
-            } else if (f < 0.666f) {
-                float s = sm((f-0.333f) / 0.333f);
-                R = _mix(pr[1],pr[2],s); G = _mix(pg[1],pg[2],s); B = _mix(pb[1],pb[2],s);
-            } else {
-                float s = sm((f-0.666f) / 0.334f);
-                R = _mix(pr[2],pr[3],s); G = _mix(pg[2],pg[3],s); B = _mix(pb[2],pb[3],s);
+            n0 = sm(n0);
+            n1 = sm(n1);
+            n2 = sm(n2);
+
+            float w[3] = {
+                std::pow(n0, 2.6f),
+                std::pow(n1, 2.6f),
+                std::pow(n2, 2.6f)
+            };
+
+            int maxIdx = 0;
+            int secondIdx = 1;
+            if (w[1] > w[0]) { maxIdx = 1; secondIdx = 0; }
+            if (w[2] > w[maxIdx]) { secondIdx = maxIdx; maxIdx = 2; }
+            else if (w[2] > w[secondIdx]) { secondIdx = 2; }
+
+            float sum = w[maxIdx] + w[secondIdx];
+            if (sum <= 0.0001f) {
+                w[maxIdx] = 0.5f;
+                w[secondIdx] = 0.5f;
+                sum = 1.0f;
             }
+
+            float R = (pr[maxIdx] * w[maxIdx] + pr[secondIdx] * w[secondIdx]) / sum;
+            float G = (pg[maxIdx] * w[maxIdx] + pg[secondIdx] * w[secondIdx]) / sum;
+            float B = (pb[maxIdx] * w[maxIdx] + pb[secondIdx] * w[secondIdx]) / sum;
 
             line[x] = qRgb(
                 qBound(0, (int)(R * 200.f), 255),
@@ -644,6 +937,8 @@ void FullscreenPlayer::updateNoiseFrame()
             );
         }
     }
+
+    boxBlurRgb(frame, 6);
     m_noiseFrame = frame;
 }
 // ---------------------------------------------------------------------------
@@ -652,14 +947,7 @@ void FullscreenPlayer::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-
-    if (m_noiseFrame.isNull()) {
-        painter.fillRect(rect(), QColor(18, 18, 18));
-        return;
-    }
-
-    painter.drawImage(rect(), m_noiseFrame, m_noiseFrame.rect());
-    painter.fillRect(rect(), QColor(0, 0, 0, 100));
+    painter.fillRect(rect(), QColor(18, 18, 18));
 }
 
 void FullscreenPlayer::keyPressEvent(QKeyEvent *e)
@@ -671,6 +959,8 @@ void FullscreenPlayer::keyPressEvent(QKeyEvent *e)
 void FullscreenPlayer::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
+    if (m_bgWidget)
+        m_bgWidget->setGeometry(rect());
     if (m_isOpen)
         layoutCard();
 }
@@ -678,8 +968,8 @@ void FullscreenPlayer::resizeEvent(QResizeEvent *e)
 void FullscreenPlayer::animateTick()
 {
     m_phase += 0.05f;
-    updateNoiseFrame();
-    update();
+    if (m_bgWidget)
+        m_bgWidget->setTime(m_phase);
 }
 
 void FullscreenPlayer::layoutCard()

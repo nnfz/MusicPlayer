@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include "TrackItem.h"
 
 MetadataLoaderThread::MetadataLoaderThread(QObject *parent)
     : QThread(parent)
@@ -28,30 +29,31 @@ QString MetadataLoaderThread::normalizePathKey(const QString &path) const
 #endif
 }
 
-void MetadataLoaderThread::queueTrack(TrackItem *track)
+void MetadataLoaderThread::queueTrack(const QString &path)
 {
-    if (!track || track->isMetadataLoaded())
+    if (path.isEmpty())
         return;
 
+    const QString key = normalizePathKey(path);
     QMutexLocker locker(&m_mutex);
-    if (m_queuedSet.contains(track))
+    if (m_queuedSet.contains(key))
         return;
 
-    m_queue.append(track);
-    m_queuedSet.insert(track);
+    m_queue.append(path);
+    m_queuedSet.insert(key);
     m_condition.wakeOne();
 }
 
-void MetadataLoaderThread::queueRange(const QList<TrackItem*> &tracks)
+void MetadataLoaderThread::queueRange(const QStringList &paths)
 {
     QMutexLocker locker(&m_mutex);
-    enqueueRangeLocked(tracks, false);
+    enqueueRangeLocked(paths, false);
 }
 
-void MetadataLoaderThread::queuePriorityRange(const QList<TrackItem*> &tracks)
+void MetadataLoaderThread::queuePriorityRange(const QStringList &paths)
 {
     QMutexLocker locker(&m_mutex);
-    enqueueRangeLocked(tracks, true);
+    enqueueRangeLocked(paths, true);
 }
 
 void MetadataLoaderThread::queuePathRange(const QStringList &paths)
@@ -60,29 +62,37 @@ void MetadataLoaderThread::queuePathRange(const QStringList &paths)
     enqueuePathRangeLocked(paths);
 }
 
-void MetadataLoaderThread::enqueueRangeLocked(const QList<TrackItem*> &tracks, bool prioritize)
+void MetadataLoaderThread::enqueueRangeLocked(const QStringList &paths, bool prioritize)
 {
-    if (tracks.isEmpty())
+    if (paths.isEmpty())
         return;
 
     bool added = false;
     if (prioritize) {
-        for (int i = tracks.size() - 1; i >= 0; --i) {
-            TrackItem *track = tracks[i];
-            if (!track || track->isMetadataLoaded() || m_queuedSet.contains(track))
+        for (int i = paths.size() - 1; i >= 0; --i) {
+            const QString &path = paths[i];
+            if (path.isEmpty())
+                continue;
+            
+            const QString key = normalizePathKey(path);
+            if (m_queuedSet.contains(key))
                 continue;
 
-            m_queue.prepend(track);
-            m_queuedSet.insert(track);
+            m_queue.prepend(path);
+            m_queuedSet.insert(key);
             added = true;
         }
     } else {
-        for (TrackItem *track : tracks) {
-            if (!track || track->isMetadataLoaded() || m_queuedSet.contains(track))
+        for (const QString &path : paths) {
+            if (path.isEmpty())
+                continue;
+            
+            const QString key = normalizePathKey(path);
+            if (m_queuedSet.contains(key))
                 continue;
 
-            m_queue.append(track);
-            m_queuedSet.insert(track);
+            m_queue.append(path);
+            m_queuedSet.insert(key);
             added = true;
         }
     }
@@ -155,8 +165,8 @@ void MetadataLoaderThread::run()
     setPriority(QThread::HighPriority);
 
     while (true) {
-        QList<TrackItem*> tracksToProcess;
         QStringList pathsToProcess;
+        QStringList backgroundPathsToProcess;
 
         {
             QMutexLocker locker(&m_mutex);
@@ -171,47 +181,47 @@ void MetadataLoaderThread::run()
             // Pull a larger chunk to reduce mutex churn and increase throughput.
             const int count = qMin(24, m_queue.size());
             for (int i = 0; i < count; ++i) {
-                TrackItem *track = m_queue.takeFirst();
-                m_queuedSet.remove(track);
-                tracksToProcess.append(track);
+                const QString path = m_queue.takeFirst();
+                m_queuedSet.remove(normalizePathKey(path));
+                pathsToProcess.append(path);
             }
 
             const int pathCount = qMin(96, m_pathQueue.size());
             for (int i = 0; i < pathCount; ++i) {
                 const QString path = m_pathQueue.takeFirst();
                 m_queuedPathSet.remove(normalizePathKey(path));
-                pathsToProcess.append(path);
+                backgroundPathsToProcess.append(path);
             }
         }
 
-        // Process queued track objects first so active playlist updates stay responsive.
-        for (TrackItem *track : tracksToProcess) {
+        // Process queued track paths first so active playlist updates stay responsive.
+        for (const QString &path : pathsToProcess) {
             if (!m_running)
                 break;
-            if (track) {
-                track->ensureMetadataLoaded();
-                const QString loadedPath = track->filePath();
-                if (!loadedPath.isEmpty()) {
-                    QMutexLocker locker(&m_mutex);
-                    const QString key = normalizePathKey(loadedPath);
-                    if (!key.isEmpty()) {
-                        m_warmedPathSet.insert(key);
-                        if (m_warmedPathSet.size() > 12000)
-                            m_warmedPathSet.clear();
-                    }
+            if (!path.isEmpty()) {
+                TrackItem track(path, false);
+                track.ensureMetadataLoaded();
+                QMutexLocker locker(&m_mutex);
+                const QString key = normalizePathKey(path);
+                if (!key.isEmpty()) {
+                    m_warmedPathSet.insert(key);
+                    if (m_warmedPathSet.size() > 12000)
+                        m_warmedPathSet.clear();
                 }
-                emit metadataLoaded(loadedPath);
+                locker.unlock(); // Unlock before emitting signal
+                emit metadataLoaded(path);
             }
         }
 
         // Process background path warmup without forcing UI row updates.
-        for (const QString &path : pathsToProcess) {
+        for (const QString &path : backgroundPathsToProcess) {
             if (!m_running)
                 break;
             if (path.isEmpty())
                 continue;
 
             TrackItem warmup(path, false);
+            warmup.ensureMetadataLoaded();
 
             QMutexLocker locker(&m_mutex);
             const QString key = normalizePathKey(path);

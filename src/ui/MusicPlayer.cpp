@@ -22,6 +22,14 @@
 #include <QDirIterator>
 #include <QMessageBox>
 #include <QScrollBar>
+#include <QProgressDialog>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QMediaMetaData>
+
+#ifdef Q_OS_WIN
+#include "WinTaskbarButtons.h"
+#endif
 
 namespace {
 // Qt metadata preload can destabilize startup on some Windows/FFmpeg hook stacks.
@@ -255,7 +263,15 @@ MusicPlayer::MusicPlayer(QWidget *parent)
         onPlaylistSelected(startRow);
         restorePlaybackState();
     }
-
+    #ifdef Q_OS_WIN
+        QTimer::singleShot(0, this, [this]() {
+            m_winTaskbar = new WinTaskbarButtons(this);
+            m_winTaskbar->attach(static_cast<quintptr>(winId()));
+            connect(m_winTaskbar, &WinTaskbarButtons::previousClicked,  this, &MusicPlayer::previous);
+            connect(m_winTaskbar, &WinTaskbarButtons::playPauseClicked, this, &MusicPlayer::playPause);
+            connect(m_winTaskbar, &WinTaskbarButtons::nextClicked,      this, &MusicPlayer::next);
+        });
+    #endif
     updateLikeButtonState();
     scheduleGlobalMetadataPreload(350);
 }
@@ -327,12 +343,16 @@ void MusicPlayer::setupUI()
         "QListWidget::item:selected { background: #3d3d3d; color: #1db954; font-weight: bold; border-left: 3px solid #1db954; }"
         "QListWidget::item:hover:!selected { background: #3a3a3a; }");
     m_playlistList->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_playlistList->setDragDropMode(QAbstractItemView::NoDragDrop);
+    m_playlistList->setDragDropMode(QAbstractItemView::InternalMove);
+    m_playlistList->setDefaultDropAction(Qt::MoveAction);
     m_playlistList->setAcceptDrops(true);
     m_playlistList->viewport()->setAcceptDrops(true);
     m_playlistList->installEventFilter(this);
     m_playlistList->viewport()->installEventFilter(this);
     sidebarLayout->addWidget(m_playlistList, 1);
+
+    connect(m_playlistList->model(), &QAbstractItemModel::rowsMoved,
+            this, &MusicPlayer::onPlaylistListRowsMoved);
 
     QHBoxLayout *sidebarBtnRow = new QHBoxLayout();
     sidebarBtnRow->setSpacing(4);
@@ -746,8 +766,8 @@ void MusicPlayer::sortByColumn(int logicalIndex, Qt::SortOrder order)
         return;
 
     m_playlistTable->sortItems(logicalIndex, order);
-    m_playlistTable->horizontalHeader()->setSortIndicator(logicalIndex, order);
     syncTracksToTableOrder();
+    m_playlistTable->horizontalHeader()->setSortIndicator(logicalIndex, order);
 }
 
 void MusicPlayer::showHeaderContextMenu(const QPoint &pos)
@@ -888,11 +908,13 @@ void MusicPlayer::refreshPlaylistPanel()
 
     QListWidgetItem *allItem = new QListWidgetItem(kAllPlaylistDisplayName);
     allItem->setData(Qt::UserRole, kAllPlaylistVirtualId);
+    allItem->setFlags(allItem->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled);
     m_playlistList->addItem(allItem);
 
     for (const auto &pl : m_playlistManager->playlists()) {
         QListWidgetItem *item = new QListWidgetItem(pl.name);
         item->setData(Qt::UserRole, pl.id);
+        item->setFlags((item->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
         m_playlistList->addItem(item);
     }
 
@@ -1110,6 +1132,7 @@ void MusicPlayer::onBackgroundMetadataLoaded(const QString &filePath)
     for (int trackIndex = 0; trackIndex < m_tracks.count(); ++trackIndex) {
         TrackItem *track = m_tracks[trackIndex];
         if (track && normalizePathForCompare(track->filePath()) == needle) {
+            track->ensureMetadataLoaded();
             updateTrackRow(trackIndex);
             // Also update bottom bar if this is the currently selected/playing track
             if (trackIndex == m_currentIndex)
@@ -1154,6 +1177,20 @@ void MusicPlayer::onPlaylistCellClicked(int row, int column)
     updateLikeButtonState();
 }
 
+void MusicPlayer::onPlaylistListRowsMoved(const QModelIndex &, int, int, const QModelIndex &, int)
+{
+    QStringList newOrder;
+    for (int i = 0; i < m_playlistList->count(); ++i) {
+        QListWidgetItem *item = m_playlistList->item(i);
+        if (!item) continue;
+        QString id = item->data(Qt::UserRole).toString();
+        if (id != kAllPlaylistVirtualId) {
+            newOrder.append(id);
+        }
+    }
+    m_playlistManager->reorderPlaylists(newOrder);
+}
+
 void MusicPlayer::saveCurrentPlaylistTracks()
 {
     if (m_currentPlaylistId.isEmpty() || m_currentPlaylistId == kAllPlaylistVirtualId)
@@ -1176,6 +1213,18 @@ void MusicPlayer::onPlaylistSelected(int row)
     QString newId = m_playlistList->item(row)->data(Qt::UserRole).toString();
     if (newId == m_currentPlaylistId) return;
     const bool isAllPlaylist = (newId == kAllPlaylistVirtualId);
+    const bool forceMetadataLoad = (!m_forceMetadataLoadPlaylistId.isEmpty()
+        && m_forceMetadataLoadPlaylistId == newId);
+    if (forceMetadataLoad)
+        m_forceMetadataLoadPlaylistId.clear();
+
+    if (m_playlistTable)
+        m_playlistTable->resetSmoothScroll();
+
+    if (!m_currentPlaylistId.isEmpty() && m_playlistTable && m_playlistTable->verticalScrollBar()) {
+        m_playlistScrollPositions.insert(m_currentPlaylistId,
+                                         m_playlistTable->verticalScrollBar()->value());
+    }
 
     rememberCurrentTrackForPlaylist(m_currentPlaylistId);
 
@@ -1252,10 +1301,7 @@ void MusicPlayer::onPlaylistSelected(int row)
                 continue;
             }
 
-            QFileInfo fi(path);
-            if (!fi.exists())
-                continue;
-            m_tracks.append(new TrackItem(fi.absoluteFilePath(), true));
+            m_tracks.append(new TrackItem(path, true));
         }
     }
 
@@ -1287,10 +1333,25 @@ void MusicPlayer::onPlaylistSelected(int row)
     if (m_currentIndex >= 0 && m_currentIndex < m_tracks.count()) {
         TrackItem *currentTrack = m_tracks[m_currentIndex];
         if (currentTrack && !currentTrack->isMetadataLoaded() && m_metadataThread)
-            m_metadataThread->queuePriorityRange({currentTrack});
+            m_metadataThread->queuePriorityRange(QStringList{currentTrack->filePath()});
     }
 
     refreshTable();
+    if (forceMetadataLoad)
+        forceLoadMetadataForTracks(m_tracks, QStringLiteral("Loading metadata"));
+
+    const QString targetPlaylistId = newId;
+    const int savedScroll = m_playlistScrollPositions.value(targetPlaylistId, 0);
+    QTimer::singleShot(0, this, [this, targetPlaylistId, savedScroll]() {
+        if (!m_playlistTable || m_currentPlaylistId != targetPlaylistId)
+            return;
+        QScrollBar *bar = m_playlistTable->verticalScrollBar();
+        if (!bar)
+            return;
+        const int clamped = qBound(bar->minimum(), savedScroll, bar->maximum());
+        bar->setValue(clamped);
+        m_playlistTable->resetSmoothScroll();
+    });
 
     // Prioritize visible rows immediately after table is rendered.
     QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
@@ -1298,12 +1359,12 @@ void MusicPlayer::onPlaylistSelected(int row)
     // Start metadata warmup immediately on playlist enter (no scroll required).
     if (m_metadataThread && !m_tracks.isEmpty()) {
         const int warmupCount = qMin(120, m_tracks.count());
-        QList<TrackItem*> warmup;
+        QStringList warmup;
         warmup.reserve(warmupCount);
         for (int i = 0; i < warmupCount; ++i) {
             TrackItem *track = m_tracks[i];
             if (track && !track->isMetadataLoaded())
-                warmup.append(track);
+                warmup.append(track->filePath());
         }
         if (!warmup.isEmpty())
             m_metadataThread->queuePriorityRange(warmup);
@@ -1649,6 +1710,8 @@ void MusicPlayer::deleteSelectedPlaylist()
     if (id == kAllPlaylistVirtualId)
         return;
 
+    m_playlistScrollPositions.remove(id);
+
     if (id == m_currentPlaylistId) {
         stopDeferredMetadataLoading();
         m_engine->stop();
@@ -1727,6 +1790,7 @@ void MusicPlayer::importPlaylistFiles(const QStringList &paths)
         return;
 
     refreshPlaylistPanel();
+    m_forceMetadataLoadPlaylistId = firstImportedId;
     for (int i = 0; i < m_playlistList->count(); ++i) {
         if (m_playlistList->item(i)->data(Qt::UserRole).toString() == firstImportedId) {
             m_playlistList->setCurrentRow(i);
@@ -1800,6 +1864,15 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
 
             m_fullscreenPlayer->setGeometry(rect());
             m_fullscreenPlayer->openFor(cover, title, artist, dur, pos, playing, vol);
+            return true;
+        }
+    }
+
+    const bool isPlaylistKeyTarget = (watched == m_playlistList || watched == m_playlistList->viewport());
+    if (isPlaylistKeyTarget && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_F2) {
+            renameSelectedPlaylist();
             return true;
         }
     }
@@ -1941,8 +2014,12 @@ void MusicPlayer::dropEvent(QDropEvent *event) {
 
 void MusicPlayer::onFilesDropped(const QStringList &files, int targetVisualRow)
 {
-    if (m_currentPlaylistId == kAllPlaylistVirtualId)
+    if (m_currentPlaylistId == kAllPlaylistVirtualId) {
+        QMessageBox::information(this,
+                                 "Add Tracks",
+                                 "Select a playlist to add files. The 'all' playlist is read-only.");
         return;
+    }
 
     const int prevCount = m_tracks.count();
     TrackItem *currentTrack = (m_currentIndex >= 0 && m_currentIndex < m_tracks.count())
@@ -1970,8 +2047,8 @@ void MusicPlayer::onFilesDropped(const QStringList &files, int targetVisualRow)
         return;
 
     int metadataStartIndex = prevCount;
+    QList<TrackItem*> insertedTracks;
     if (insertIndex >= 0 && insertIndex < prevCount) {
-        QList<TrackItem*> insertedTracks;
         insertedTracks.reserve(newCount - prevCount);
         for (int i = prevCount; i < newCount; ++i)
             insertedTracks.append(m_tracks[i]);
@@ -1986,6 +2063,15 @@ void MusicPlayer::onFilesDropped(const QStringList &files, int targetVisualRow)
         metadataStartIndex = boundedInsertIndex;
     }
 
+    QList<TrackItem*> importedTracks;
+    if (!insertedTracks.isEmpty()) {
+        importedTracks = insertedTracks;
+    } else {
+        importedTracks.reserve(newCount - prevCount);
+        for (int i = prevCount; i < newCount; ++i)
+            importedTracks.append(m_tracks[i]);
+    }
+
     if (currentTrack)
         m_currentIndex = m_tracks.indexOf(currentTrack);
 
@@ -1993,6 +2079,7 @@ void MusicPlayer::onFilesDropped(const QStringList &files, int targetVisualRow)
     refreshTable();
     QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
     m_trackCountLabel->setText(QString("%1 tracks").arg(m_tracks.count()));
+    forceLoadMetadataForTracks(importedTracks, QStringLiteral("Loading metadata"));
     saveCurrentPlaylistTracks();
     resyncPreparedNext();
     startDeferredMetadataLoading(metadataStartIndex);
@@ -2041,6 +2128,192 @@ void MusicPlayer::preloadTrackMetadata()
             m_metadataLoader->setSource(QUrl::fromLocalFile(m_tracks[m_metadataLoadIndex]->filePath()));
         }
     });
+}
+
+void MusicPlayer::forceLoadMetadataForTracks(const QList<TrackItem*> &tracks, const QString &title)
+{
+    if (tracks.isEmpty())
+        return;
+
+    QList<TrackItem*> pending;
+    pending.reserve(tracks.size());
+    for (TrackItem *track : tracks) {
+        if (track && !track->isMetadataLoaded())
+            pending.append(track);
+    }
+
+    if (pending.isEmpty())
+        return;
+
+    const int total = pending.count();
+
+    QProgressDialog progress(this);
+    progress.setWindowTitle(title.isEmpty()
+                                ? QStringLiteral("Loading metadata")
+                                : title);
+    progress.setLabelText(QStringLiteral("Loading metadata..."));
+    progress.setRange(0, total);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setCancelButton(nullptr);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    if (!m_metadataThread || !m_metadataThread->isRunning()) {
+        int loaded = 0;
+        for (TrackItem *track : pending) {
+            if (!track)
+                continue;
+            track->ensureMetadataLoaded();
+            ++loaded;
+            progress.setValue(loaded);
+            if ((loaded % 4) == 0)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        progress.setValue(total);
+    } else {
+        QStringList pendingPaths;
+        pendingPaths.reserve(pending.size());
+        for (TrackItem *track : pending) {
+            if (track)
+                pendingPaths.append(track->filePath());
+        }
+
+        m_metadataThread->clearTrackQueue();
+        m_metadataThread->queuePriorityRange(pendingPaths);
+
+        QElapsedTimer timer;
+        timer.start();
+        int lastLoaded = -1;
+        while (true) {
+            int loaded = 0;
+            QString currentPath;
+            for (TrackItem *track : pending) {
+                if (!track)
+                    continue;
+                if (track->isMetadataLoaded()) {
+                    ++loaded;
+                } else if (currentPath.isEmpty()) {
+                    currentPath = track->filePath();
+                }
+            }
+
+            if (loaded != lastLoaded) {
+                lastLoaded = loaded;
+                timer.restart(); // Reset timeout on progress
+                QString label = QStringLiteral("Loading metadata... %1/%2")
+                                    .arg(loaded)
+                                    .arg(total);
+                if (!currentPath.isEmpty())
+                    label += QStringLiteral("\n%1").arg(QFileInfo(currentPath).fileName());
+                progress.setLabelText(label);
+                progress.setValue(loaded);
+            }
+
+            if (loaded >= total)
+                break;
+
+            // Safety timeout: 15 seconds without any progress
+            if (timer.elapsed() > 15000) {
+                qWarning() << "forceLoadMetadataForTracks: timeout reached, breaking loop";
+                break;
+            }
+
+            if (progress.wasCanceled())
+                break;
+
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+            QThread::msleep(10);
+        }
+
+        progress.setValue(total);
+    }
+
+    QList<TrackItem*> coverPending;
+    coverPending.reserve(pending.size());
+    for (TrackItem *track : pending) {
+        if (track && track->isCoverPlaceholder())
+            coverPending.append(track);
+    }
+
+    if (coverPending.isEmpty())
+        return;
+
+    QMediaPlayer coverPlayer;
+    QAudioOutput coverOutput;
+    coverOutput.setVolume(0.0f);
+    coverPlayer.setAudioOutput(&coverOutput);
+
+    auto loadCoverFromQtMetadata = [&coverPlayer](const QString &filePath, int timeoutMs) -> QImage {
+        if (filePath.isEmpty())
+            return {};
+
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+
+        bool finished = false;
+        auto finish = [&]() {
+            if (finished)
+                return;
+            finished = true;
+            loop.quit();
+        };
+
+        QObject::connect(&coverPlayer, &QMediaPlayer::mediaStatusChanged, &loop,
+                         [&](QMediaPlayer::MediaStatus status) {
+            if (status == QMediaPlayer::LoadedMedia
+                || status == QMediaPlayer::BufferedMedia
+                || status == QMediaPlayer::InvalidMedia) {
+                finish();
+            }
+        });
+        QObject::connect(&coverPlayer, &QMediaPlayer::metaDataChanged, &loop, [&]() {
+            if (!coverPlayer.metaData().isEmpty())
+                finish();
+        });
+        QObject::connect(&timer, &QTimer::timeout, &loop, [&]() { finish(); });
+
+        coverPlayer.setSource(QUrl::fromLocalFile(filePath));
+        timer.start(qMax(200, timeoutMs));
+        loop.exec();
+
+        QImage cover;
+        const QMediaMetaData metaData = coverPlayer.metaData();
+        QVariant coverVar = metaData.value(QMediaMetaData::ThumbnailImage);
+        if (!coverVar.isValid())
+            coverVar = metaData.value(QMediaMetaData::CoverArtImage);
+        if (coverVar.isValid())
+            cover = coverVar.value<QImage>();
+
+        coverPlayer.setSource(QUrl());
+        return cover;
+    };
+
+    progress.setLabelText(QStringLiteral("Loading covers..."));
+    progress.setRange(0, coverPending.count());
+    progress.setValue(0);
+
+    int coverLoaded = 0;
+    for (TrackItem *track : coverPending) {
+        if (!track)
+            continue;
+
+        const QImage cover = loadCoverFromQtMetadata(track->filePath(), 1400);
+        if (track->applyMetadataCover(cover)) {
+            const int trackIndex = m_tracks.indexOf(track);
+            if (trackIndex >= 0)
+                updateTrackRow(trackIndex);
+            if (trackIndex == m_currentIndex)
+                updateBottomBarFromTrack(track);
+        }
+
+        ++coverLoaded;
+        progress.setValue(coverLoaded);
+        if ((coverLoaded % 2) == 0)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
 }
 
 void MusicPlayer::onMetaDataLoaded()
@@ -2127,11 +2400,11 @@ void MusicPlayer::processDeferredMetadataBatch()
 
     // Queue larger batches so full-playlist preload starts faster.
     const int batchSize = 140;
-    QList<TrackItem*> batch;
+    QStringList batch;
     for (int i = 0; i < batchSize && m_deferredMetadataIndex < m_tracks.count(); ++i) {
         TrackItem *track = m_tracks[m_deferredMetadataIndex];
         if (track && !track->isMetadataLoaded()) {
-            batch.append(track);
+            batch.append(track->filePath());
         }
         ++m_deferredMetadataIndex;
     }
@@ -2154,7 +2427,15 @@ void MusicPlayer::onPlaylistScroll(int value)
 {
     Q_UNUSED(value);
 
-    if (!m_playlistTable || !m_metadataThread)
+    if (!m_playlistTable)
+        return;
+
+    if (!m_currentPlaylistId.isEmpty()) {
+        if (QScrollBar *bar = m_playlistTable->verticalScrollBar())
+            m_playlistScrollPositions.insert(m_currentPlaylistId, bar->value());
+    }
+
+    if (!m_metadataThread)
         return;
 
     const int rowCount = m_playlistTable->rowCount();
@@ -2175,8 +2456,8 @@ void MusicPlayer::onPlaylistScroll(int value)
         lastVisible = rowCount - 1;
     }
 
-    QList<TrackItem*> priority;
-    QList<TrackItem*> nearby;
+    QStringList priority;
+    QStringList nearby;
 
     // Visible rows — highest priority
     for (int row = firstVisible; row <= lastVisible && row < rowCount; ++row) {
@@ -2184,7 +2465,7 @@ void MusicPlayer::onPlaylistScroll(int value)
         if (trackIdx >= 0 && trackIdx < m_tracks.count()) {
             TrackItem *track = m_tracks[trackIdx];
             if (track && !track->isMetadataLoaded())
-                priority.append(track);
+                priority.append(track->filePath());
         }
     }
 
@@ -2196,8 +2477,8 @@ void MusicPlayer::onPlaylistScroll(int value)
             int trackIdx = getTrackIndexFromVisualRow(row);
             if (trackIdx >= 0 && trackIdx < m_tracks.count()) {
                 TrackItem *t = m_tracks[trackIdx];
-                if (t && !t->isMetadataLoaded() && !nearby.contains(t) && !priority.contains(t))
-                    nearby.append(t);
+                if (t && !t->isMetadataLoaded() && !nearby.contains(t->filePath()) && !priority.contains(t->filePath()))
+                    nearby.append(t->filePath());
             }
         }
     }
@@ -2300,19 +2581,49 @@ void MusicPlayer::addFile(const QString &filePath)
 void MusicPlayer::addDirectory(const QString &dirPath)
 {
     QDir dir(dirPath);
+    QFileInfoList cueFiles = dir.entryInfoList({QStringLiteral("*.cue")}, QDir::Files, QDir::Name);
+    QSet<QString> cueAudioKeys;
+
+    for (const QFileInfo &cueInfo : cueFiles) {
+        const QList<CueTrack> cueTracks = CueParser::parse(cueInfo.absoluteFilePath());
+        if (cueTracks.isEmpty())
+            continue;
+
+        QMap<QString, QImage> coverCache;
+        for (const CueTrack &ct : cueTracks) {
+            if (!QFileInfo::exists(ct.audioFilePath))
+                continue;
+
+            cueAudioKeys.insert(normalizePathForCompare(ct.audioFilePath));
+            if (!coverCache.contains(ct.audioFilePath))
+                coverCache[ct.audioFilePath] = TrackItem::coverArtFromFile(ct.audioFilePath);
+
+            m_tracks.append(TrackItem::fromCueTrack(ct, coverCache[ct.audioFilePath]));
+        }
+    }
+
     QFileInfoList files = dir.entryInfoList(audioNameFilters(), QDir::Files, QDir::Name);
 
-    for (const QFileInfo &fileInfo : files)
-        addFile(fileInfo.absoluteFilePath());
+    for (const QFileInfo &fileInfo : files) {
+        const QString absolutePath = fileInfo.absoluteFilePath();
+        if (cueAudioKeys.contains(normalizePathForCompare(absolutePath)))
+            continue;
+        addFile(absolutePath);
+    }
 }
 
 void MusicPlayer::addCueFile(const QString &cuePath)
 {
     const QList<CueTrack> cueTracks = CueParser::parse(cuePath);
-    if (cueTracks.isEmpty())
+    if (cueTracks.isEmpty()) {
+        QMessageBox::warning(this,
+                             "CUE Import",
+                             "No tracks were found in the CUE file.");
         return;
+    }
 
     QMap<QString, QImage> coverCache;
+    int added = 0;
 
     for (const CueTrack &ct : cueTracks) {
         if (!QFileInfo::exists(ct.audioFilePath))
@@ -2322,6 +2633,13 @@ void MusicPlayer::addCueFile(const QString &cuePath)
             coverCache[ct.audioFilePath] = TrackItem::coverArtFromFile(ct.audioFilePath);
 
         m_tracks.append(TrackItem::fromCueTrack(ct, coverCache[ct.audioFilePath]));
+        ++added;
+    }
+
+    if (added == 0) {
+        QMessageBox::warning(this,
+                             "CUE Import",
+                             "CUE references audio files that were not found.");
     }
 }
 
@@ -2349,6 +2667,7 @@ void MusicPlayer::advanceCueTrack()
             == normalizePathForCompare(m_tracks[nextIdx]->filePath());
 
     m_currentIndex = nextIdx;
+    updatePlaybackTrackKey();
 
     if (canDoInFileCueSeek) {
         const qint64 currentEndMs = m_tracks[currentIdx]->metadata().cueEndMs;
@@ -3008,6 +3327,8 @@ void MusicPlayer::updatePosition(qint64 position) {
             // Don't update time label during seek - position values are unreliable
             if (!m_seekPending)
                 m_currentTimeLabel->setText(formatTime(rel));
+            if (m_fullscreenPlayer && !m_seekPending)
+                m_fullscreenPlayer->updatePosition(static_cast<int>(rel));
             // skip the rest of the original updatePosition body for CUE:
             return;
         }
@@ -3041,8 +3362,19 @@ void MusicPlayer::updateDuration(qint64 duration) {
             m_positionSlider->setRange(0, static_cast<int>(cueDur));
             m_totalTimeLabel->setText(formatTime(cueDur));
             const int vr = getVisualRowFromTrackIndex(m_currentIndex);
-            if (vr != -1)
-                m_playlistTable->item(vr, COL_DURATION)->setText(formatTime(cueDur));
+            if (vr != -1) {
+                if (QTableWidgetItem *durItem = m_playlistTable->item(vr, COL_DURATION))
+                    durItem->setText(formatTime(cueDur));
+            }
+            if (m_fullscreenPlayer) {
+                const QString title = t->metadata().title.isEmpty()
+                    ? QFileInfo(t->filePath()).baseName()
+                    : t->metadata().title;
+                m_fullscreenPlayer->updateTrack(t->metadata().coverPixmap(),
+                                                title,
+                                                t->metadata().artist,
+                                                static_cast<int>(cueDur));
+            }
         }
         return;
     }
@@ -3055,8 +3387,10 @@ void MusicPlayer::updateDuration(qint64 duration) {
         if (m_tracks[m_currentIndex]->metadata().duration == 0) {
             m_tracks[m_currentIndex]->metadata().duration = duration;
             int visualRow = getVisualRowFromTrackIndex(m_currentIndex);
-            if (visualRow != -1)
-                m_playlistTable->item(visualRow, COL_DURATION)->setText(formatTime(duration));
+            if (visualRow != -1) {
+                if (QTableWidgetItem *durItem = m_playlistTable->item(visualRow, COL_DURATION))
+                    durItem->setText(formatTime(duration));
+            }
         }
     }
 }
@@ -3083,6 +3417,7 @@ void MusicPlayer::playCurrentItem()
         clearShuffleRuntimeState(true);
 
     TrackItem *track = m_tracks[m_currentIndex];
+    updatePlaybackTrackKey();
     if (track && !track->isMetadataLoaded()) {
         track->ensureMetadataLoaded();
         updateTrackRow(m_currentIndex);
@@ -3149,6 +3484,10 @@ void MusicPlayer::onEngineStateChanged(GaplessAudioEngine::State state) {
     const bool playing = (state == GaplessAudioEngine::Playing);
     if (playing) m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8"));
     else m_playButton->setText(QString::fromUtf8("\xE2\x96\xB6"));
+    #ifdef Q_OS_WIN
+        if (m_winTaskbar)
+            m_winTaskbar->setPlaying(playing);
+    #endif
     if (m_fullscreenPlayer)
         m_fullscreenPlayer->updatePlayState(playing);
     updatePlaylistHighlight();
@@ -3200,6 +3539,7 @@ void MusicPlayer::onEngineTrackTransitioned() {
         m_preparedNextIndex = -1;
         m_preparedNextPath.clear();
         TrackItem *track = m_tracks[m_currentIndex];
+        updatePlaybackTrackKey();
 
         if (track && !track->isMetadataLoaded()) {
             track->ensureMetadataLoaded();
@@ -3285,14 +3625,19 @@ void MusicPlayer::volumeChanged(int value) {
 void MusicPlayer::updatePlaylistHighlight()
 {
     int coverSize = qMax(30, m_rowHeight - 10);
-    int playingVisualRow = getVisualRowFromTrackIndex(m_currentIndex);
-    m_playlistTable->setPlayingRow(playingVisualRow);
     bool isPlaying = m_engine->state() == GaplessAudioEngine::Playing;
     bool isPaused = m_engine->state() == GaplessAudioEngine::Paused;
+    int playingTrackIndex = resolvePlayingTrackIndex();
+    if (playingTrackIndex < 0 && !isPlaying && !isPaused)
+        playingTrackIndex = m_currentIndex;
+
+    int playingVisualRow = getVisualRowFromTrackIndex(playingTrackIndex);
+    m_playlistTable->setPlayingRow(playingVisualRow);
 
     for (int row = 0; row < m_playlistTable->rowCount(); ++row) {
         int trackIndex = getTrackIndexFromVisualRow(row);
         bool isCurrent = (trackIndex == m_currentIndex && m_currentIndex >= 0);
+        bool isPlayingTrack = (trackIndex == playingTrackIndex && playingTrackIndex >= 0);
 
         QFont font;
         font.setBold(isCurrent);
@@ -3311,7 +3656,7 @@ void MusicPlayer::updatePlaylistHighlight()
                 base.fill(Qt::transparent);
             }
 
-            if (isCurrent && (isPlaying || isPaused)) {
+            if (isPlayingTrack && (isPlaying || isPaused)) {
                 QPixmap overlay = base.scaled(coverSize, coverSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
                 QPainter p(&overlay);
                 p.setRenderHint(QPainter::Antialiasing);
@@ -3335,6 +3680,71 @@ void MusicPlayer::updatePlaylistHighlight()
         if (titleItem && trackIndex >= 0 && trackIndex < m_tracks.count())
             titleItem->setText(m_tracks[trackIndex]->metadata().title);
     }
+}
+
+void MusicPlayer::updatePlaybackTrackKey()
+{
+    if (!isValidTrackIndex(m_currentIndex)) {
+        m_playbackTrackKey.clear();
+        return;
+    }
+
+    TrackItem *track = m_tracks[m_currentIndex];
+    if (!track) {
+        m_playbackTrackKey.clear();
+        return;
+    }
+
+    if (track->metadata().isCueTrack) {
+        m_playbackTrackKey = makeCueSavedPath(track->metadata().cueFilePath,
+                                              track->metadata().trackNumber);
+    } else {
+        m_playbackTrackKey = QFileInfo(track->filePath()).absoluteFilePath();
+    }
+}
+
+int MusicPlayer::resolvePlayingTrackIndex() const
+{
+    if (!m_engine)
+        return -1;
+
+    const bool isPlaying = (m_engine->state() == GaplessAudioEngine::Playing);
+    const bool isPaused = (m_engine->state() == GaplessAudioEngine::Paused);
+    if (!isPlaying && !isPaused)
+        return -1;
+
+    int playingTrackIndex = -1;
+
+    if (!m_playbackTrackKey.isEmpty()) {
+        if (isCueSavedPath(m_playbackTrackKey)) {
+            QString cuePath;
+            int trackNum = 0;
+            if (parseCueSavedPath(m_playbackTrackKey, cuePath, trackNum)) {
+                const QString needle = normalizePathForCompare(cuePath);
+                for (int i = 0; i < m_tracks.count(); ++i) {
+                    const TrackMetadata &md = m_tracks[i]->metadata();
+                    if (!md.isCueTrack)
+                        continue;
+                    if (md.trackNumber != trackNum)
+                        continue;
+                    if (normalizePathForCompare(md.cueFilePath) == needle) {
+                        playingTrackIndex = i;
+                        break;
+                    }
+                }
+            }
+        } else {
+            playingTrackIndex = findTrackIndexByPath(m_playbackTrackKey);
+        }
+    }
+
+    if (playingTrackIndex < 0) {
+        const QString enginePath = m_engine->currentFilePath();
+        if (!enginePath.isEmpty())
+            playingTrackIndex = findTrackIndexByPath(enginePath);
+    }
+
+    return playingTrackIndex;
 }
 
 QString MusicPlayer::formatTime(qint64 milliseconds) {
@@ -3477,6 +3887,7 @@ void MusicPlayer::restorePlaybackState()
     m_currentIndex = trackIndex;
     m_playbackPlaylistId = m_currentPlaylistId;
     rememberCurrentTrackForPlaylist(m_currentPlaylistId);
+    updatePlaybackTrackKey();
     TrackItem *track = m_tracks[m_currentIndex];
     if (track && !track->isMetadataLoaded()) {
         track->ensureMetadataLoaded();
@@ -3630,16 +4041,53 @@ void MusicPlayer::updateTrackRow(int trackIndex)
     TrackItem *track = m_tracks[trackIndex];
     const TrackMetadata &md = track->metadata();
 
-    if (!md.coverArt.isNull())
-        m_playlistTable->item(visualRow, COL_COVER)->setData(Qt::DecorationRole, QPixmap::fromImage(md.coverArt));
+    if (QTableWidgetItem *coverItem = m_playlistTable->item(visualRow, COL_COVER)) {
+        const int coverSize = qMax(30, m_rowHeight - 10);
+        QPixmap base = md.coverPixmap();
+        if (base.isNull()) {
+            base = QPixmap(coverSize, coverSize);
+            base.fill(Qt::transparent);
+        }
 
-    m_playlistTable->item(visualRow, COL_TITLE)->setText(md.title);
-    m_playlistTable->item(visualRow, COL_ARTIST)->setText(md.artist);
-    m_playlistTable->item(visualRow, COL_ALBUM)->setText(md.album);
-    m_playlistTable->item(visualRow, COL_YEAR)->setText(md.year);
-    m_playlistTable->item(visualRow, COL_GENRE)->setText(md.genre);
-    m_playlistTable->item(visualRow, COL_TRACK)->setData(Qt::DisplayRole,
-        md.trackNumber > 0 ? md.trackNumber : trackIndex + 1);
+        const bool isPlaying = m_engine->state() == GaplessAudioEngine::Playing;
+        const bool isPaused = m_engine->state() == GaplessAudioEngine::Paused;
+        const int playingTrackIndex = resolvePlayingTrackIndex();
+        const bool isPlayingTrack = (trackIndex == playingTrackIndex && playingTrackIndex >= 0);
+
+        if (isPlayingTrack && (isPlaying || isPaused)) {
+            QPixmap overlay = base.scaled(coverSize, coverSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            QPainter p(&overlay);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.fillRect(overlay.rect(), QColor(0, 0, 0, 120));
+
+            QString icon = isPlaying ? QString::fromUtf8("\xE2\x96\xB6") : QString::fromUtf8("\xE2\x8F\xB8");
+            QFont iconFont;
+            iconFont.setPixelSize(qMax(14, coverSize / 3));
+            p.setFont(iconFont);
+            p.setPen(Qt::white);
+            p.drawText(overlay.rect(), Qt::AlignCenter, icon);
+            p.end();
+
+            coverItem->setData(Qt::DecorationRole, overlay);
+        } else {
+            coverItem->setData(Qt::DecorationRole, base);
+        }
+    }
+
+    if (QTableWidgetItem *titleItem = m_playlistTable->item(visualRow, COL_TITLE))
+        titleItem->setText(md.title);
+    if (QTableWidgetItem *artistItem = m_playlistTable->item(visualRow, COL_ARTIST))
+        artistItem->setText(md.artist);
+    if (QTableWidgetItem *albumItem = m_playlistTable->item(visualRow, COL_ALBUM))
+        albumItem->setText(md.album);
+    if (QTableWidgetItem *yearItem = m_playlistTable->item(visualRow, COL_YEAR))
+        yearItem->setText(md.year);
+    if (QTableWidgetItem *genreItem = m_playlistTable->item(visualRow, COL_GENRE))
+        genreItem->setText(md.genre);
+    if (QTableWidgetItem *trackItem = m_playlistTable->item(visualRow, COL_TRACK)) {
+        trackItem->setData(Qt::DisplayRole,
+            md.trackNumber > 0 ? md.trackNumber : trackIndex + 1);
+    }
 
     const QString outlineHeart = QString::fromUtf8("\xE2\x99\xA1");
     const QString filledHeart = QString::fromUtf8("\xE2\x99\xA5");
@@ -3650,12 +4098,16 @@ void MusicPlayer::updateTrackRow(int trackIndex)
         likedItem->setForeground(liked ? QColor("#1db954") : QColor("#b3b3b3"));
     }
 
-    m_playlistTable->item(visualRow, COL_DURATION)->setText(
-        md.duration > 0 ? formatTime(md.duration) : "");
-    m_playlistTable->item(visualRow, COL_BITRATE)->setText(
-        md.bitrate > 0 ? QString::number(md.bitrate / 1000) : "");
-    m_playlistTable->item(visualRow, COL_SAMPLERATE)->setText(
-        md.sampleRate > 0 ? QString::number(md.sampleRate / 1000.0, 'f', 1) : "");
+    if (QTableWidgetItem *durItem = m_playlistTable->item(visualRow, COL_DURATION)) {
+        durItem->setText(md.duration > 0 ? formatTime(md.duration) : "");
+        durItem->setTextAlignment(Qt::AlignCenter);
+    }
+    if (QTableWidgetItem *bitrateItem = m_playlistTable->item(visualRow, COL_BITRATE)) {
+        bitrateItem->setText(md.bitrate > 0 ? QString::number(md.bitrate / 1000) : "");
+    }
+    if (QTableWidgetItem *rateItem = m_playlistTable->item(visualRow, COL_SAMPLERATE)) {
+        rateItem->setText(md.sampleRate > 0 ? QString::number(md.sampleRate / 1000.0, 'f', 1) : "");
+    }
 }
 
 void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)

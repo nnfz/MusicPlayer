@@ -7,7 +7,6 @@
 #include <QSet>
 #include <QStringList>
 #include <QWaitCondition>
-#include "TrackItem.h"
 
 class MetadataLoaderThread : public QThread
 {
@@ -17,9 +16,9 @@ public:
     explicit MetadataLoaderThread(QObject *parent = nullptr);
     ~MetadataLoaderThread();
 
-    void queueTrack(TrackItem *track);
-    void queueRange(const QList<TrackItem*> &tracks);
-    void queuePriorityRange(const QList<TrackItem*> &tracks);
+    void queueTrack(const QString &path);
+    void queueRange(const QStringList &paths);
+    void queuePriorityRange(const QStringList &paths);
     void queuePathRange(const QStringList &paths);
     void clearTrackQueue();
     void clearQueue();
@@ -33,13 +32,13 @@ protected:
     void run() override;
 
 private:
-    void enqueueRangeLocked(const QList<TrackItem*> &tracks, bool prioritize);
+    void enqueueRangeLocked(const QStringList &paths, bool prioritize);
     void enqueuePathRangeLocked(const QStringList &paths);
     QString normalizePathKey(const QString &path) const;
 
     QMutex m_mutex;
-    QList<TrackItem*> m_queue;
-    QSet<TrackItem*> m_queuedSet;
+    QStringList m_queue;
+    QSet<QString> m_queuedSet;
     QStringList m_pathQueue;
     QSet<QString> m_queuedPathSet;
     QSet<QString> m_warmedPathSet;
