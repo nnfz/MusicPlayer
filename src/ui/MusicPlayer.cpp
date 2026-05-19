@@ -928,13 +928,13 @@ void MusicPlayer::refreshPlaylistPanel()
 
     QListWidgetItem *allItem = new QListWidgetItem(kAllPlaylistDisplayName);
     allItem->setData(Qt::UserRole, kAllPlaylistVirtualId);
-    allItem->setFlags(allItem->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled);
+    allItem->setFlags(allItem->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled & ~Qt::ItemIsEditable);
     m_playlistList->addItem(allItem);
 
     for (const auto &pl : m_playlistManager->playlists()) {
         QListWidgetItem *item = new QListWidgetItem(pl.name);
         item->setData(Qt::UserRole, pl.id);
-        item->setFlags((item->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
+        item->setFlags((item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsEditable) & ~Qt::ItemIsDropEnabled);
         m_playlistList->addItem(item);
     }
 
@@ -1710,22 +1710,13 @@ void MusicPlayer::renameSelectedPlaylist()
     if (id == kAllPlaylistVirtualId)
         return;
 
-    m_playlistList->setEditTriggers(QAbstractItemView::AllEditTriggers);
     item->setFlags(item->flags() | Qt::ItemIsEditable);
     m_playlistList->editItem(item);
-
-    connect(m_playlistList->itemDelegate(), &QAbstractItemDelegate::closeEditor, this, [this, id]() {
-        QListWidgetItem *cur = m_playlistList->currentItem();
-        if (cur) {
-            QString newName = cur->text().trimmed();
-            if (!newName.isEmpty()) {
-                m_playlistManager->renamePlaylist(id, newName);
-                refreshPlaylistPanel();
-            }
-        }
-        m_playlistList->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        disconnect(m_playlistList->itemDelegate(), &QAbstractItemDelegate::closeEditor, this, nullptr);
-    });
+    // Note: actual rename persistence is handled by the QListWidget::itemChanged
+    // signal connected in the constructor, so double-click, F2, and context-menu
+    // rename all flow through the same path. Edit triggers stay set to
+    // DoubleClicked | EditKeyPressed (set once at widget creation) so double-click
+    // continues to work after any rename.
 }
 
 void MusicPlayer::deleteSelectedPlaylist()

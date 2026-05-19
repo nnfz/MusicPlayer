@@ -205,6 +205,12 @@ private:
     qreal                  m_lyricsHighlightProgress { 1.0 };
     qint64                 m_lyricsHoldUntilMs { 0 };
     bool                   m_lyricsAutoScrollSuppressed { false };
+    // Sub-frame interpolation: between 50ms engine position updates, we
+    // extrapolate the playback time at ~60Hz so lyric highlight transitions
+    // happen exactly on the beat instead of jittering to the next 50ms tick.
+    qint64                 m_positionAnchorWallMs { 0 };  // wall clock at last engine update
+    int                    m_positionAnchorAudioMs { 0 }; // audio time at last engine update
+    bool                   m_positionAnchorPlaying { false };
 
     QVector<QColor>        m_palette;
     QImage                 m_noiseFrame;

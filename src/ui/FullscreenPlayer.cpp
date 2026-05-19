@@ -696,10 +696,13 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsList->setItemDelegate(m_lyricsDelegate);
 
     m_lyricsHighlightAnim = new QVariantAnimation(this);
-    m_lyricsHighlightAnim->setDuration(450);
+    // 280ms OutCubic feels right for lyric transitions — slow enough to read
+    // the morph but fast enough that line N+1 visibly takes over before the
+    // user starts wondering. Spotify's transition is ~250ms.
+    m_lyricsHighlightAnim->setDuration(280);
     m_lyricsHighlightAnim->setStartValue(0.0);
     m_lyricsHighlightAnim->setEndValue(1.0);
-    m_lyricsHighlightAnim->setEasingCurve(QEasingCurve::InOutSine);
+    m_lyricsHighlightAnim->setEasingCurve(QEasingCurve::OutCubic);
     connect(m_lyricsHighlightAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
         m_lyricsHighlightProgress = v.toReal();
         if (m_lyricsDelegate)
@@ -712,14 +715,23 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     connect(m_lyricsList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         const int row = m_lyricsList->row(item);
-        if (row >= 0 && row < m_lyricsSyncedTimes.size()) {
-            m_expectedSeekPositionMs = m_lyricsSyncedTimes[row];
-            m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 3000;
-            startLyricsHighlightAnimation(m_lyricsCurrentIndex, row);
-            m_lyricsCurrentIndex = row;
-            emit seekRequested(m_expectedSeekPositionMs);
-            animateLyricsScrollTo(row, true, true);
-        }
+        if (row < 0 || row >= m_lyricsSyncedTimes.size())
+            return;
+        const int targetMs = m_lyricsSyncedTimes[row];
+        m_expectedSeekPositionMs = targetMs;
+        // Short ignore window: engine usually catches up within 100-300ms.
+        // 600ms is plenty without freezing the UI for seconds on slow seeks.
+        m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 600;
+        if (m_lyricsScrollAnim) m_lyricsScrollAnim->stop();
+        startLyricsHighlightAnimation(m_lyricsCurrentIndex, row);
+        m_lyricsCurrentIndex = row;
+        // Re-anchor interpolation so updateLyricsHighlight doesn't bounce away
+        // before the engine's first post-seek position arrives.
+        m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch();
+        m_positionAnchorAudioMs = targetMs;
+        m_lastPositionMs = targetMs;
+        emit seekRequested(targetMs);
+        animateLyricsScrollTo(row, true, false);
     });
 
     m_lyricsList->viewport()->installEventFilter(this);
@@ -867,20 +879,32 @@ void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title,
 
 void FullscreenPlayer::updatePosition(int ms)
 {
-    if (m_userSeeking) { 
-        m_lastPositionMs = ms; 
-        return; 
+    if (m_userSeeking) {
+        m_lastPositionMs = ms;
+        // Re-anchor so when sliderReleased fires the interpolator picks up
+        // from the actual playback point, not a stale one.
+        m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch();
+        m_positionAnchorAudioMs = ms;
+        return;
     }
 
     if (QDateTime::currentMSecsSinceEpoch() < m_seekIgnoreUntilMs) {
-        if (std::abs(ms - m_expectedSeekPositionMs) < 1500) {
-            m_seekIgnoreUntilMs = 0; // Caught up to the seek target! Unblock.
+        // Engine still settling after a click-to-seek. Accept once it's close
+        // to the target — tolerance tightened to 500ms (was 1500) so we don't
+        // accidentally lock onto a different line near a long instrumental gap.
+        if (std::abs(ms - m_expectedSeekPositionMs) < 500) {
+            m_seekIgnoreUntilMs = 0;
         } else {
-            return; // Strictly ignore stale updates from backend while it settles
+            return;
         }
     }
 
     m_lastPositionMs = ms;
+    // Anchor for sub-frame interpolation. The engine emits at ~20Hz; we want
+    // lyric highlight transitions to land within one display frame of the true
+    // audio position, so animateTick() extrapolates from this anchor.
+    m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch();
+    m_positionAnchorAudioMs = ms;
     m_seekSlider->blockSignals(true); m_seekSlider->setValue(ms); m_seekSlider->blockSignals(false);
     m_currentTime->setText(fmt(ms));
     updateLyricsHighlight(ms);
@@ -889,6 +913,12 @@ void FullscreenPlayer::updatePosition(int ms)
 void FullscreenPlayer::updatePlayState(bool playing)
 {
     m_playBtn->setText(playing ? QString::fromUtf8("\xE2\x8F\xB8") : QString::fromUtf8("\xE2\x96\xB6"));
+    // Re-anchor the interpolator at the play/pause transition. While paused
+    // we freeze the extrapolator so the highlight doesn't run away from the
+    // real (frozen) audio position.
+    m_positionAnchorPlaying = playing;
+    m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch();
+    m_positionAnchorAudioMs = m_lastPositionMs;
 }
 
 void FullscreenPlayer::updateVolume(int value)
@@ -1358,8 +1388,14 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
         }
         if (m_lyricsList)
             m_lyricsList->doItemsLayout();
-        if (visible && m_lyricsSyncedAvailable)
-            animateLyricsScrollTo(m_lyricsCurrentIndex);
+        if (visible && m_lyricsSyncedAvailable) {
+            // When opening the panel mid-playback, m_lyricsCurrentIndex may
+            // still be -1 (no highlight tick has fired yet). Force a fresh
+            // lookup from the current audio position so the panel snaps to
+            // the right line instead of starting at the top.
+            updateLyricsHighlight(m_lastPositionMs);
+            animateLyricsScrollTo(m_lyricsCurrentIndex, true, true);
+        }
     });
 
     group->start(QAbstractAnimation::DeleteWhenStopped);
@@ -1406,6 +1442,11 @@ void FullscreenPlayer::rebuildLyricsList()
         m_lyricsDelegate->setIndices(-1, -1);
         m_lyricsDelegate->setProgress(1.0);
     }
+
+    // Pre-warm geometry: force Qt to lay out every row's sizeHint now so the
+    // first lyric-line activation doesn't pay the lazy layout cost (which used
+    // to manifest as a visible stutter on the first transition of every song).
+    m_lyricsList->doItemsLayout();
 }
 
 void FullscreenPlayer::animateLyricsScrollTo(int logicalIndex, bool force, bool instant)
@@ -1442,8 +1483,11 @@ void FullscreenPlayer::animateLyricsScrollTo(int logicalIndex, bool force, bool 
     m_lyricsScrollAnim->stop();
     m_lyricsScrollAnim->setStartValue(currentVal);
     m_lyricsScrollAnim->setEndValue(target);
-    m_lyricsScrollAnim->setDuration(450);
-    m_lyricsScrollAnim->setEasingCurve(QEasingCurve::InOutSine);
+    // Match the highlight animation duration and easing so the line "rises"
+    // and "lights up" as a single coherent motion instead of two stuttery
+    // independent timelines (which is what made the old behavior feel laggy).
+    m_lyricsScrollAnim->setDuration(380);
+    m_lyricsScrollAnim->setEasingCurve(QEasingCurve::OutCubic);
     m_lyricsScrollAnim->start();
 }
 void FullscreenPlayer::startLyricsHighlightAnimation(int prevIndex, int nextIndex)
@@ -1471,7 +1515,11 @@ int FullscreenPlayer::lyricsScrollTargetForIndex(int index) const
     QListWidgetItem *item = m_lyricsList->item(index);
     if (!item) return -1;
 
-    m_lyricsList->doItemsLayout();
+    // NOTE: doItemsLayout() was previously called here on every lyric line
+    // activation. It is O(N) and was the main cause of visible scroll lag.
+    // Layout is now warmed exactly once in rebuildLyricsList() and refreshed
+    // when the lyrics panel finishes resizing, so the cached visualItemRect
+    // here is reliable.
     QRect rect = m_lyricsList->visualItemRect(item);
     if (!rect.isValid()) return -1;
 
@@ -1499,7 +1547,10 @@ QPoint FullscreenPlayer::cardPosForWidth(int cardWidth) const
 
 void FullscreenPlayer::suspendLyricsAutoScroll()
 {
-    m_lyricsHoldUntilMs = QDateTime::currentMSecsSinceEpoch() + 2000;
+    // 700ms hold after the last user wheel/touch — long enough that a single
+    // scroll gesture isn't yanked back instantly, short enough that the
+    // auto-follow feels responsive again once the user stops. (Was 2000.)
+    m_lyricsHoldUntilMs = QDateTime::currentMSecsSinceEpoch() + 700;
     m_lyricsAutoScrollSuppressed = true;
 }
 
@@ -1653,6 +1704,24 @@ void FullscreenPlayer::animateTick()
     if (m_bgWidget)
         m_bgWidget->setTime(m_phase);
     maybeResumeLyricsAutoScroll();
+
+    // Sub-frame lyric sync: between 50ms engine updates, extrapolate audio
+    // position assuming playback is steady. This brings the visible lyric
+    // transition latency down from ~50ms (worst case) to one display frame.
+    // We only extrapolate forward — if the engine sends a corrected position
+    // updatePosition() will re-anchor.
+    if (m_positionAnchorPlaying && m_lyricsSyncedAvailable && m_lyricsVisible &&
+        QDateTime::currentMSecsSinceEpoch() >= m_seekIgnoreUntilMs && !m_userSeeking)
+    {
+        const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_positionAnchorWallMs;
+        // Clamp to a sane bound — if we somehow haven't received a position
+        // update in a while, don't extrapolate into the next song.
+        const qint64 capped = elapsed < qint64(0) ? qint64(0)
+                            : elapsed > qint64(500) ? qint64(500)
+                            : elapsed;
+        const int extrapolated = m_positionAnchorAudioMs + static_cast<int>(capped);
+        updateLyricsHighlight(extrapolated);
+    }
 }
 
 void FullscreenPlayer::layoutCard()
