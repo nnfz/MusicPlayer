@@ -13,11 +13,32 @@
 #include <QEasingCurve>
 #include <QLinearGradient>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
 #include <QVector>
+#include <QListWidget>
+#include <QScrollBar>
+#include <QStyledItemDelegate>
+#include <QTextOption>
+#include <QVariantAnimation>
+#include <QHash>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QUrl>
+#include <QUrlQuery>
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <QDateTime>
 
@@ -39,6 +60,273 @@ static QPixmap rounded(const QPixmap &src, int r)
     QPainterPath path; path.addRoundedRect(out.rect(), r, r);
     p.setClipPath(path); p.drawPixmap(0, 0, src); return out;
 }
+
+static QString normalizeLyricsKey(const QString &text)
+{
+    return text.simplified().toLower();
+}
+
+static int durationToSeconds(int ms)
+{
+    if (ms <= 0)
+        return 0;
+    return qMax(1, static_cast<int>(std::lround(ms / 1000.0)));
+}
+
+static constexpr int kCardWidth = 440;
+static constexpr int kLyricsPanelWidth = 360;
+static constexpr int kLyricsPanelPaddingLeft = 24;
+static constexpr int kLyricsFontSize = 14;
+static constexpr int kLyricsFontSizeActive = 18;
+
+struct LyricsCacheEntry {
+    QString synced;
+    QString plain;
+    bool instrumental = false;
+    bool found = false;
+};
+
+QHash<QString, LyricsCacheEntry> s_lyricsCache;
+bool s_lyricsCacheLoaded = false;
+static constexpr int kLyricsCacheMaxEntries = 800;
+static constexpr int kLyricsCacheVersion = 1;
+
+QString lyricsCachePath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dir.isEmpty())
+        return {};
+    QDir().mkpath(dir);
+    return dir + QStringLiteral("/lrc_cache.json");
+}
+
+void pruneLyricsCache()
+{
+    while (s_lyricsCache.size() > kLyricsCacheMaxEntries) {
+        auto it = s_lyricsCache.begin();
+        if (it == s_lyricsCache.end())
+            break;
+        s_lyricsCache.erase(it);
+    }
+}
+
+void loadLyricsCache()
+{
+    if (s_lyricsCacheLoaded)
+        return;
+    s_lyricsCacheLoaded = true;
+
+    const QString path = lyricsCachePath();
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly))
+        return;
+
+    if (file.size() > 5 * 1024 * 1024) {
+        file.close();
+        return;
+    }
+
+    const QByteArray data = file.readAll();
+    file.close();
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject())
+        return;
+
+    const QJsonObject root = doc.object();
+    if (root.value(QStringLiteral("version")).toInt() != kLyricsCacheVersion)
+        return;
+
+    const QJsonObject items = root.value(QStringLiteral("items")).toObject();
+    for (auto it = items.begin(); it != items.end(); ++it) {
+        const QJsonObject obj = it.value().toObject();
+        LyricsCacheEntry entry;
+        entry.synced = obj.value(QStringLiteral("synced")).toString();
+        entry.plain = obj.value(QStringLiteral("plain")).toString();
+        entry.instrumental = obj.value(QStringLiteral("instrumental")).toBool(false);
+        entry.found = obj.value(QStringLiteral("found")).toBool(false);
+        s_lyricsCache.insert(it.key(), entry);
+    }
+}
+
+void saveLyricsCache()
+{
+    if (!s_lyricsCacheLoaded)
+        return;
+
+    const QString path = lyricsCachePath();
+    if (path.isEmpty())
+        return;
+
+    QJsonObject items;
+    for (auto it = s_lyricsCache.begin(); it != s_lyricsCache.end(); ++it) {
+        QJsonObject obj;
+        obj.insert(QStringLiteral("synced"), it->synced);
+        obj.insert(QStringLiteral("plain"), it->plain);
+        obj.insert(QStringLiteral("instrumental"), it->instrumental);
+        obj.insert(QStringLiteral("found"), it->found);
+        items.insert(it.key(), obj);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), kLyricsCacheVersion);
+    root.insert(QStringLiteral("items"), items);
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    file.commit();
+}
+
+void cacheLyricsEntry(const QString &key, const LyricsCacheEntry &entry)
+{
+    if (key.isEmpty())
+        return;
+    s_lyricsCache.insert(key, entry);
+    pruneLyricsCache();
+    saveLyricsCache();
+}
+
+class LyricsItemDelegate : public QStyledItemDelegate
+{
+public:
+    explicit LyricsItemDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) {}
+
+    void setView(QListWidget *view) { m_view = view; }
+
+    void setIndices(int active, int previous)
+    {
+        m_activeIndex = active;
+        m_prevIndex = previous;
+    }
+
+    void setProgress(qreal progress)
+    {
+        m_progress = progress;
+        if (m_view) {
+            // We no longer call doItemsLayout() here. 
+            // Layout is completely static now, only visual rendering changes.
+            // This guarantees 60fps buttery smoothness.
+            m_view->viewport()->update();
+        }
+    }
+
+    int getExtraTop(int row) const {
+        if (!m_view || !m_view->viewport()) return 0;
+        return (row == 0) ? qMax(0, m_view->viewport()->height() / 2 - 20) : 0;
+    }
+
+    int getExtraBottom(int row) const {
+        if (!m_view || !m_view->viewport() || !m_view->model()) return 0;
+        return (row == m_view->model()->rowCount() - 1) ? qMax(0, m_view->viewport()->height() / 2 - 20) : 0;
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        
+        QFont font = opt.font;
+        font.setPixelSize(kLyricsFontSizeActive);
+        font.setBold(true);
+        QFontMetrics fm(font);
+
+        int width = opt.rect.width();
+        if (width <= 0 && m_view)
+            width = m_view->viewport()->width() - 24;
+        if (width <= 0)
+            width = 300;
+
+        int flags = Qt::TextWordWrap | Qt::AlignCenter;
+        QRect bounds = fm.boundingRect(QRect(0, 0, width, 10000), flags, opt.text);
+        
+        // Return generous container size so scaled text never clips.
+        return QSize(width, bounds.height() + 24 + getExtraTop(index.row()) + getExtraBottom(index.row()));
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+
+        painter->save();
+        painter->setRenderHint(QPainter::TextAntialiasing);
+
+        const bool isActive = index.row() == m_activeIndex;
+        const bool isPrev = index.row() == m_prevIndex;
+        qreal blend = 0.0;
+        if (isActive)
+            blend = m_progress;
+        else if (isPrev)
+            blend = 1.0 - m_progress;
+
+        const int baseSize = kLyricsFontSize;
+        const int activeSize = kLyricsFontSizeActive;
+        
+        // Use painter scale rather than changing font size
+        qreal minScale = (qreal)baseSize / (qreal)activeSize;
+        qreal scale = minScale + (1.0 - minScale) * blend;
+
+        QFont font = opt.font;
+        font.setPixelSize(activeSize);
+        font.setBold(true);
+        painter->setFont(font);
+
+        auto lerp = [&](int a, int b) { return a + (b - a) * blend; };
+        QColor baseColor(140, 140, 140);
+        QColor activeColor(255, 255, 255);
+        QColor color(lerp(baseColor.red(), activeColor.red()),
+                     lerp(baseColor.green(), activeColor.green()),
+                     lerp(baseColor.blue(), activeColor.blue()));
+        painter->setPen(color);
+
+        QRect contentRect = opt.rect;
+        contentRect.setTop(contentRect.top() + getExtraTop(index.row()));
+        contentRect.setBottom(contentRect.bottom() - getExtraBottom(index.row()));
+
+        // Scale from the exact center of the layout block
+        painter->translate(contentRect.center());
+        painter->scale(scale, scale);
+        painter->translate(-contentRect.center());
+
+        // Dynamic fade out near the edges of the viewport
+        if (m_view && m_view->viewport()) {
+            int viewH = m_view->viewport()->height();
+            int cy = contentRect.center().y();
+            float dist = std::abs(cy - viewH / 2.0f);
+            float maxDist = viewH / 2.0f;
+            float normalizedDist = dist / maxDist; // 0 at center, 1 at edge
+            float alpha = 1.0f;
+            if (normalizedDist > 0.35f) {
+                alpha = 1.0f - (normalizedDist - 0.35f) / 0.65f;
+            }
+            // Apply easing for smoother fade
+            alpha = alpha * alpha; 
+            painter->setOpacity(qBound(0.0f, alpha, 1.0f));
+        }
+
+        QTextOption textOpt;
+        textOpt.setWrapMode(QTextOption::WordWrap);
+        textOpt.setAlignment(Qt::AlignCenter);
+        
+        // Text wrapper sees full box, painter scale fits it smoothly
+        painter->drawText(contentRect, opt.text, textOpt);
+
+        painter->restore();
+    }
+
+private:
+    QListWidget *m_view { nullptr };
+    int m_activeIndex { -1 };
+    int m_prevIndex { -1 };
+    qreal m_progress { 1.0 };
+};
 
 // ---------------------------------------------------------------------------
 // OpenGL background
@@ -249,34 +537,49 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     m_card = new QWidget(this);
     m_card->setStyleSheet("background:transparent;");
-    m_card->setFixedWidth(440);
+    m_card->setMinimumWidth(kCardWidth);
+    m_card->setMaximumWidth(kCardWidth + kLyricsPanelWidth);
+    m_card->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_cardOpacity = new QGraphicsOpacityEffect(m_card);
     m_cardOpacity->setOpacity(0.0);
     m_card->setGraphicsEffect(m_cardOpacity);
+
+    m_mainPanel = new QWidget(m_card);
+    m_mainPanel->setFixedWidth(kCardWidth);
+    m_mainPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+
+    m_lyricsPanel = new QWidget(m_card);
+    m_lyricsPanel->setMaximumWidth(0);
+    m_lyricsPanel->setMinimumWidth(0);
+    m_lyricsPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_lyricsPanel->setStyleSheet("background:transparent;");
+    m_lyricsOpacity = new QGraphicsOpacityEffect(m_lyricsPanel);
+    m_lyricsOpacity->setOpacity(0.0);
+    m_lyricsPanel->setGraphicsEffect(m_lyricsOpacity);
 
     m_bgWidget = new FullscreenBackgroundGL(this);
     m_bgWidget->setGeometry(rect());
     m_bgWidget->lower();
 
-    m_coverLabel = new QLabel(m_card);
+    m_coverLabel = new QLabel(m_mainPanel);
     m_coverLabel->setFixedSize(320, 320);
     m_coverLabel->setAlignment(Qt::AlignCenter);
 
-    m_titleLabel = new MarqueeLabel(m_card);
+    m_titleLabel = new MarqueeLabel(m_mainPanel);
     m_titleLabel->setFixedWidth(400);
     { QFont f; f.setPixelSize(24); f.setBold(true);
       m_titleLabel->setTextStyle(f, QColor(255, 255, 255, 255)); }
 
-    m_artistLabel = new MarqueeLabel(m_card);
+    m_artistLabel = new MarqueeLabel(m_mainPanel);
     m_artistLabel->setFixedWidth(400);
     { QFont f; f.setPixelSize(16);
       m_artistLabel->setTextStyle(f, QColor(255, 255, 255, 175)); }
 
-    m_currentTime = new QLabel("00:00", m_card);
+    m_currentTime = new QLabel("00:00", m_mainPanel);
     m_currentTime->setStyleSheet("color:rgba(255,255,255,150);font-size:11px;background:transparent;");
     m_currentTime->setFixedWidth(40);
 
-    m_totalTime = new QLabel("00:00", m_card);
+    m_totalTime = new QLabel("00:00", m_mainPanel);
     m_totalTime->setStyleSheet("color:rgba(255,255,255,150);font-size:11px;background:transparent;");
     m_totalTime->setFixedWidth(40);
     m_totalTime->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -288,7 +591,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
         "QSlider::handle:horizontal{background:white;width:12px;height:12px;margin:-4px 0;border-radius:6px}"
         "QSlider::handle:horizontal:hover{background:#0078d7}";
 
-    m_seekSlider = new ClickableSlider(Qt::Horizontal, m_card);
+    m_seekSlider = new ClickableSlider(Qt::Horizontal, m_mainPanel);
     m_seekSlider->setRange(0, 0);
     m_seekSlider->setStyleSheet(sliderSS);
     m_seekSlider->setCursor(Qt::PointingHandCursor);
@@ -302,7 +605,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     });
 
     auto btn = [&](const QString &txt, int sz) {
-        auto *b = new QPushButton(txt, m_card);
+        auto *b = new QPushButton(txt, m_mainPanel);
         b->setStyleSheet(QString("QPushButton{background:transparent;border:none;color:rgba(255,255,255,200);font-size:%1px;padding:4px 14px}QPushButton:hover{color:white}").arg(sz));
         b->setCursor(Qt::PointingHandCursor);
         return b;
@@ -318,7 +621,13 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_closeBtn   = btn(QString::fromUtf8("\xE2\x9C\x95"), 18);
     m_muteBtn    = btn(QString::fromUtf8("\xF0\x9F\x94\x8A"), 18);
 
-    m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_card);
+    m_textBtn->setStyleSheet(
+        "QPushButton{background:transparent;border:none;color:rgba(255,255,255,200);font-size:20px;padding:4px 14px}"
+        "QPushButton:hover{color:white}"
+        "QPushButton:disabled{color:rgba(255,255,255,90);}");
+    m_textBtn->setEnabled(false);
+
+    m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_mainPanel);
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setFixedWidth(100);
     m_volumeSlider->setStyleSheet(sliderSS);
@@ -330,11 +639,12 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     connect(m_nextBtn,    &QPushButton::clicked, this, &FullscreenPlayer::nextRequested);
     connect(m_repeatBtn,  &QPushButton::clicked, this, &FullscreenPlayer::repeatToggleRequested);
     connect(m_likeBtn,    &QPushButton::clicked, this, &FullscreenPlayer::likeToggleRequested);
+    connect(m_textBtn,    &QPushButton::clicked, this, &FullscreenPlayer::toggleLyrics);
     connect(m_closeBtn,   &QPushButton::clicked, this, &FullscreenPlayer::closeOverlay);
     connect(m_muteBtn,    &QPushButton::clicked, this, &FullscreenPlayer::muteToggleRequested);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &FullscreenPlayer::volumeChangeRequested);
 
-    QVBoxLayout *cl = new QVBoxLayout(m_card);
+    QVBoxLayout *cl = new QVBoxLayout(m_mainPanel);
     cl->setContentsMargins(0, 0, 0, 0); cl->setSpacing(0);
     cl->addStretch();
     cl->addWidget(m_coverLabel, 0, Qt::AlignCenter); cl->addSpacing(30);
@@ -361,6 +671,69 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     auto *vr = new QHBoxLayout(); vr->setAlignment(Qt::AlignHCenter); vr->setSpacing(6);
     vr->addWidget(m_muteBtn); vr->addWidget(m_volumeSlider); vr->addWidget(m_closeBtn);
     cl->addLayout(vr);
+
+    auto *lyricsLayout = new QVBoxLayout(m_lyricsPanel);
+    lyricsLayout->setContentsMargins(kLyricsPanelPaddingLeft, 12, 12, 12);
+    lyricsLayout->setSpacing(10);
+
+    m_lyricsList = new QListWidget(m_lyricsPanel);
+    m_lyricsList->setWordWrap(true);
+    m_lyricsList->setUniformItemSizes(false);
+    m_lyricsList->setSpacing(6);
+    m_lyricsList->setFocusPolicy(Qt::NoFocus);
+    m_lyricsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_lyricsList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_lyricsList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_lyricsList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_lyricsList->viewport()->setCursor(Qt::PointingHandCursor);
+    m_lyricsList->setStyleSheet(
+        "QListWidget{background:transparent;border:none;color:rgba(255,255,255,180);}"
+        "QListWidget::item{padding:2px 6px;}"
+    );
+
+    m_lyricsDelegate = new LyricsItemDelegate(m_lyricsList);
+    m_lyricsDelegate->setView(m_lyricsList);
+    m_lyricsList->setItemDelegate(m_lyricsDelegate);
+
+    m_lyricsHighlightAnim = new QVariantAnimation(this);
+    m_lyricsHighlightAnim->setDuration(450);
+    m_lyricsHighlightAnim->setStartValue(0.0);
+    m_lyricsHighlightAnim->setEndValue(1.0);
+    m_lyricsHighlightAnim->setEasingCurve(QEasingCurve::InOutSine);
+    connect(m_lyricsHighlightAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        m_lyricsHighlightProgress = v.toReal();
+        if (m_lyricsDelegate)
+            m_lyricsDelegate->setProgress(m_lyricsHighlightProgress);
+    });
+    connect(m_lyricsHighlightAnim, &QVariantAnimation::finished, this, [this] {
+        m_lyricsPrevIndex = -1;
+    });
+    lyricsLayout->addWidget(m_lyricsList, 1);
+
+    connect(m_lyricsList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        const int row = m_lyricsList->row(item);
+        if (row >= 0 && row < m_lyricsSyncedTimes.size()) {
+            m_expectedSeekPositionMs = m_lyricsSyncedTimes[row];
+            m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 3000;
+            startLyricsHighlightAnimation(m_lyricsCurrentIndex, row);
+            m_lyricsCurrentIndex = row;
+            emit seekRequested(m_expectedSeekPositionMs);
+            animateLyricsScrollTo(row, true, true);
+        }
+    });
+
+    m_lyricsList->viewport()->installEventFilter(this);
+    // Force native viewport repaint when scrolling so our dynamic opacity works perfectly
+    connect(m_lyricsList->verticalScrollBar(), &QScrollBar::valueChanged, m_lyricsList->viewport(), [this] {
+        m_lyricsList->viewport()->update();
+    });
+    // No visible scrollbar; suspend auto-scroll via wheel/drag only.
+
+    auto *root = new QHBoxLayout(m_card);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(m_mainPanel);
+    root->addWidget(m_lyricsPanel);
 }
 
 // ---------------------------------------------------------------------------
@@ -370,21 +743,32 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
     if (w == m_coverLabel && e->type() == QEvent::MouseButtonRelease) {
         if (static_cast<QMouseEvent *>(e)->button() == Qt::LeftButton) { closeOverlay(); return true; }
     }
+    if (m_lyricsList &&
+        w == m_lyricsList->viewport() &&
+        (e->type() == QEvent::Wheel || e->type() == QEvent::MouseButtonPress ||
+         e->type() == QEvent::MouseMove || e->type() == QEvent::KeyPress)) {
+        suspendLyricsAutoScroll();
+    }
     return QWidget::eventFilter(w, e);
 }
 
 // ---------------------------------------------------------------------------
 
 void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const QString &artist,
-                                int durationMs, int positionMs, bool isPlaying, int volume)
+                                const QString &album, int durationMs, int positionMs, bool isPlaying, int volume)
 {
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
 
     m_rawCover = cover; m_durationMs = durationMs;
+    m_trackTitle = title;
+    m_trackArtist = artist;
+    m_trackAlbum = album;
+    m_trackDurationSec = durationToSeconds(durationMs);
     m_titleLabel->setText(title); m_artistLabel->setText(artist);
     m_seekSlider->setRange(0, durationMs); m_totalTime->setText(fmt(durationMs));
     updateCoverWidget(); updatePosition(positionMs); updatePlayState(isPlaying); updateVolume(volume);
     m_volumeSlider->blockSignals(true); m_volumeSlider->setValue(volume); m_volumeSlider->blockSignals(false);
+    requestLyrics();
     
     for (auto *w : { (QWidget*)m_muteBtn, (QWidget*)m_closeBtn, (QWidget*)m_shuffleBtn, 
                      (QWidget*)m_repeatBtn, (QWidget*)m_likeBtn, (QWidget*)m_textBtn, 
@@ -418,7 +802,7 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
 
     auto *pa = new QPropertyAnimation(m_card, "pos", group);
     pa->setStartValue(startCardPos); pa->setEndValue(finalCardPos);
-    pa->setDuration(450); pa->setEasingCurve(QEasingCurve::OutBack);
+    pa->setDuration(450); pa->setEasingCurve(QEasingCurve::OutQuint);
     group->addAnimation(pa);
 
     group->start(QAbstractAnimation::DeleteWhenStopped);
@@ -433,6 +817,7 @@ void FullscreenPlayer::closeOverlay()
     if (!m_isOpen) return;
     m_isOpen = false;
     releaseKeyboard();
+    setLyricsVisible(false, false);
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
 
     m_closeAnim = new QParallelAnimationGroup(this);
@@ -460,9 +845,13 @@ void FullscreenPlayer::closeOverlay()
 // ---------------------------------------------------------------------------
 
 void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title,
-                                    const QString &artist, int durationMs)
+                                    const QString &artist, const QString &album, int durationMs)
 {
     m_rawCover = cover; m_durationMs = durationMs;
+    m_trackTitle = title;
+    m_trackArtist = artist;
+    m_trackAlbum = album;
+    m_trackDurationSec = durationToSeconds(durationMs);
     m_titleLabel->setText(title); m_artistLabel->setText(artist);
     m_seekSlider->setRange(0, durationMs); m_totalTime->setText(fmt(durationMs));
     updateCoverWidget();
@@ -472,13 +861,29 @@ void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title,
         if (m_bgWidget)
             m_bgWidget->setPalette(m_palette);
     }
+    if (m_isOpen)
+        requestLyrics();
 }
 
 void FullscreenPlayer::updatePosition(int ms)
 {
-    if (m_userSeeking) return;
+    if (m_userSeeking) { 
+        m_lastPositionMs = ms; 
+        return; 
+    }
+
+    if (QDateTime::currentMSecsSinceEpoch() < m_seekIgnoreUntilMs) {
+        if (std::abs(ms - m_expectedSeekPositionMs) < 1500) {
+            m_seekIgnoreUntilMs = 0; // Caught up to the seek target! Unblock.
+        } else {
+            return; // Strictly ignore stale updates from backend while it settles
+        }
+    }
+
+    m_lastPositionMs = ms;
     m_seekSlider->blockSignals(true); m_seekSlider->setValue(ms); m_seekSlider->blockSignals(false);
     m_currentTime->setText(fmt(ms));
+    updateLyricsHighlight(ms);
 }
 
 void FullscreenPlayer::updatePlayState(bool playing)
@@ -540,6 +945,582 @@ void FullscreenPlayer::updateRepeatState(int mode)
         m_repeatBtn->setText(QString::fromUtf8("\xF0\x9F\x94\x82"));
         m_repeatBtn->setStyleSheet("QPushButton{background:transparent;border:none;color:#1db954;font-size:20px;padding:4px 14px}QPushButton:hover{color:#1ed760}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Lyrics
+// ---------------------------------------------------------------------------
+
+bool FullscreenPlayer::hasLyrics() const
+{
+    return m_lyricsSyncedAvailable || !m_lyricsPlainLines.isEmpty();
+}
+
+void FullscreenPlayer::toggleLyrics()
+{
+    if (!hasLyrics())
+        return;
+    setLyricsVisible(!m_lyricsVisible, true);
+}
+
+void FullscreenPlayer::requestLyrics()
+{
+    loadLyricsCache();
+
+    if (m_lyricsReply) {
+        m_lyricsReply->abort();
+        m_lyricsReply->deleteLater();
+        m_lyricsReply = nullptr;
+    }
+    m_lyricsRequestInFlight = false;
+
+    const QString title = m_trackTitle.trimmed();
+    const QString artist = m_trackArtist.trimmed();
+    if (title.isEmpty() || title == QStringLiteral("No track playing")) {
+        m_lyricsSyncedAvailable = false;
+        m_lyricsPlainLines.clear();
+        m_lyricsSyncedLines.clear();
+        m_lyricsSyncedTimes.clear();
+        m_lyricsCurrentIndex = -1;
+        rebuildLyricsList();
+        updateLyricsButtonState();
+        return;
+    }
+
+    const QString key = normalizeLyricsKey(title) + "|" +
+                        normalizeLyricsKey(artist) + "|" +
+                        QString::number(m_trackDurationSec);
+    if (key == m_lyricsKey && (m_lyricsRequestInFlight || hasLyrics()))
+        return;
+
+    m_lyricsKey = key;
+
+    const auto cached = s_lyricsCache.constFind(key);
+    if (cached != s_lyricsCache.constEnd()) {
+        if (cached->found)
+            applyLyrics(cached->synced, cached->plain, cached->instrumental);
+        else
+            applyLyrics(QString(), QString(), false);
+        return;
+    }
+
+    m_lyricsSyncedAvailable = false;
+    m_lyricsPlainLines.clear();
+    m_lyricsSyncedLines.clear();
+    m_lyricsSyncedTimes.clear();
+    m_lyricsCurrentIndex = -1;
+    m_lyricsRequestInFlight = true;
+    rebuildLyricsList();
+    updateLyricsButtonState();
+
+    if (!m_lyricsNet)
+        m_lyricsNet = new QNetworkAccessManager(this);
+
+    QUrl url(QStringLiteral("https://lrclib.net/api/search"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("track_name"), title);
+    if (!artist.isEmpty())
+        query.addQueryItem(QStringLiteral("artist_name"), artist);
+    url.setQuery(query);
+
+    sendLyricsRequest(url);
+}
+
+void FullscreenPlayer::sendLyricsRequest(const QUrl &url)
+{
+    if (m_lyricsReply) {
+        m_lyricsReply->abort();
+        m_lyricsReply->deleteLater();
+        m_lyricsReply = nullptr;
+    }
+
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, QByteArray("MusicPlayer"));
+    req.setTransferTimeout(8000);
+
+    m_lyricsRequestInFlight = true;
+    rebuildLyricsList();
+    m_lyricsReply = m_lyricsNet->get(req);
+    const int token = ++m_lyricsRequestToken;
+    m_lyricsReply->setProperty("lyricsToken", token);
+    connect(m_lyricsReply, &QNetworkReply::finished, this, &FullscreenPlayer::onLyricsReplyFinished);
+}
+
+void FullscreenPlayer::onLyricsReplyFinished()
+{
+    auto *reply = qobject_cast<QNetworkReply *>(sender());
+    if (!reply)
+        return;
+
+    const int token = reply->property("lyricsToken").toInt();
+    if (token != m_lyricsRequestToken) {
+        reply->deleteLater();
+        return;
+    }
+
+    const QNetworkReply::NetworkError netError = reply->error();
+    const bool replyOpen = reply->isOpen();
+    if (m_lyricsReply == reply)
+        m_lyricsReply = nullptr;
+    reply->deleteLater();
+
+    if (netError != QNetworkReply::NoError || !replyOpen) {
+        m_lyricsRequestInFlight = false;
+        rebuildLyricsList();
+        updateLyricsButtonState();
+        return;
+    }
+
+    m_lyricsRequestInFlight = false;
+    const QByteArray payload = reply->readAll();
+
+    QJsonParseError parseErr;
+    QJsonDocument doc = QJsonDocument::fromJson(payload, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isArray()) {
+        rebuildLyricsList();
+        updateLyricsButtonState();
+        return;
+    }
+
+    const QJsonArray arr = doc.array();
+    if (arr.isEmpty()) {
+        cacheLyricsEntry(m_lyricsKey, { QString(), QString(), false, false });
+        rebuildLyricsList();
+        updateLyricsButtonState();
+        return;
+    }
+
+    int bestIndex = -1;
+    int bestScore = std::numeric_limits<int>::min();
+    int bestDiff = std::numeric_limits<int>::max();
+    const QString wantTitle = normalizeLyricsKey(m_trackTitle);
+    const QString wantArtist = normalizeLyricsKey(m_trackArtist);
+
+    for (int i = 0; i < arr.size(); ++i) {
+        const QJsonObject obj = arr.at(i).toObject();
+        if (obj.isEmpty())
+            continue;
+
+        const QString gotTitle = normalizeLyricsKey(obj.value(QStringLiteral("trackName")).toString());
+        const QString gotArtist = normalizeLyricsKey(obj.value(QStringLiteral("artistName")).toString());
+        const int duration = obj.value(QStringLiteral("duration")).toInt();
+        const int diff = (m_trackDurationSec > 0 && duration > 0)
+            ? std::abs(duration - m_trackDurationSec)
+            : std::numeric_limits<int>::max();
+
+        int score = 0;
+        if (!wantTitle.isEmpty() && gotTitle == wantTitle)
+            score += 6;
+        if (!wantArtist.isEmpty() && gotArtist == wantArtist)
+            score += 5;
+        if (diff <= 2)
+            score += 3;
+        else if (diff <= 5)
+            score += 1;
+        else if (diff != std::numeric_limits<int>::max())
+            score -= diff / 5;
+
+        const QString synced = obj.value(QStringLiteral("syncedLyrics")).toString().trimmed();
+        const QString plain = obj.value(QStringLiteral("plainLyrics")).toString().trimmed();
+        if (!synced.isEmpty())
+            score += 2;
+        else if (!plain.isEmpty())
+            score += 1;
+
+        if (score > bestScore || (score == bestScore && diff < bestDiff)) {
+            bestScore = score;
+            bestDiff = diff;
+            bestIndex = i;
+        }
+    }
+
+    if (bestIndex < 0) {
+        cacheLyricsEntry(m_lyricsKey, { QString(), QString(), false, false });
+        rebuildLyricsList();
+        updateLyricsButtonState();
+        return;
+    }
+
+    const QJsonObject best = arr.at(bestIndex).toObject();
+    const QString synced = best.value(QStringLiteral("syncedLyrics")).toString();
+    const QString plain = best.value(QStringLiteral("plainLyrics")).toString();
+    const bool instrumental = best.value(QStringLiteral("instrumental")).toBool(false);
+    cacheLyricsEntry(m_lyricsKey, { synced, plain, instrumental, true });
+    applyLyrics(synced, plain, instrumental);
+}
+
+void FullscreenPlayer::applyLyrics(const QString &synced, const QString &plain, bool instrumental)
+{
+    m_lyricsSyncedAvailable = false;
+    m_lyricsPlainLines.clear();
+    m_lyricsSyncedLines.clear();
+    m_lyricsSyncedTimes.clear();
+    m_lyricsCurrentIndex = -1;
+
+    const QString syncedTrim = synced.trimmed();
+    const QString plainTrim = plain.trimmed();
+
+    if (!syncedTrim.isEmpty())
+        parseSyncedLyrics(syncedTrim);
+
+    if (!m_lyricsSyncedAvailable && !plainTrim.isEmpty())
+        parsePlainLyrics(plainTrim);
+
+    rebuildLyricsList();
+    updateLyricsButtonState();
+    if (instrumental && !hasLyrics())
+        return;
+    updateLyricsHighlight(m_lastPositionMs);
+}
+
+void FullscreenPlayer::parseSyncedLyrics(const QString &text)
+{
+    struct Entry { int timeMs; QString line; };
+    QVector<Entry> entries;
+
+    QRegularExpression tag(QStringLiteral("\\[(\\d{1,2}):(\\d{2})(?:\\.(\\d{1,3}))?\\]"));
+    const QStringList rawLines = text.split('\n');
+    for (const QString &raw : rawLines) {
+        QRegularExpressionMatchIterator it = tag.globalMatch(raw);
+        if (!it.hasNext())
+            continue;
+
+        QString line = raw;
+        line.remove(tag);
+        line = line.trimmed();
+        if (line.isEmpty())
+            continue;
+
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            const int minutes = m.captured(1).toInt();
+            const int seconds = m.captured(2).toInt();
+            const QString fracText = m.captured(3);
+            int fracMs = 0;
+            if (!fracText.isEmpty()) {
+                const int frac = fracText.toInt();
+                if (fracText.size() == 1)
+                    fracMs = frac * 100;
+                else if (fracText.size() == 2)
+                    fracMs = frac * 10;
+                else
+                    fracMs = frac;
+            }
+            const int timeMs = minutes * 60000 + seconds * 1000 + fracMs;
+            entries.push_back({ timeMs, line });
+        }
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.timeMs < b.timeMs;
+    });
+
+    m_lyricsSyncedLines.clear();
+    m_lyricsSyncedTimes.clear();
+    for (const Entry &e : entries) {
+        m_lyricsSyncedTimes.append(e.timeMs);
+        m_lyricsSyncedLines.append(e.line);
+    }
+
+    m_lyricsSyncedAvailable = !m_lyricsSyncedLines.isEmpty();
+}
+
+void FullscreenPlayer::parsePlainLyrics(const QString &text)
+{
+    QStringList lines = text.split('\n');
+    while (!lines.isEmpty() && lines.first().trimmed().isEmpty())
+        lines.removeFirst();
+    while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
+        lines.removeLast();
+    m_lyricsPlainLines = lines;
+}
+
+void FullscreenPlayer::updateLyricsButtonState()
+{
+    const bool enabled = hasLyrics();
+    if (!m_textBtn)
+        return;
+
+    m_textBtn->setEnabled(enabled);
+    const bool active = enabled && m_lyricsVisible;
+    m_textBtn->setStyleSheet(active
+        ? "QPushButton{background:transparent;border:none;color:#1db954;font-size:20px;padding:4px 14px}QPushButton:hover{color:#1ed760}QPushButton:disabled{color:rgba(255,255,255,90);}"
+        : "QPushButton{background:transparent;border:none;color:rgba(255,255,255,200);font-size:20px;padding:4px 14px}QPushButton:hover{color:white}QPushButton:disabled{color:rgba(255,255,255,90);}");
+
+    if (!enabled && !m_lyricsRequestInFlight && m_lyricsVisible)
+        setLyricsVisible(false, true);
+}
+
+void FullscreenPlayer::updateLyricsHighlight(int ms)
+{
+    if (!m_lyricsSyncedAvailable || m_lyricsSyncedTimes.isEmpty() || !m_lyricsList)
+        return;
+
+    auto it = std::upper_bound(m_lyricsSyncedTimes.begin(), m_lyricsSyncedTimes.end(), ms);
+    const int idx = it == m_lyricsSyncedTimes.begin()
+        ? -1
+        : static_cast<int>(it - m_lyricsSyncedTimes.begin()) - 1;
+
+    if (QDateTime::currentMSecsSinceEpoch() < m_seekIgnoreUntilMs) {
+        if (idx != m_lyricsCurrentIndex) {
+            // We recently seeked, and the engine is sending a time that maps to a DIFFERENT
+            // lyric line than the one we actively clicked. It's likely a slightly early keyframe.
+            // Block it so the UI doesn't bounce away from the clicked line.
+            return;
+        } else {
+            // The engine's time now naturally falls exactly into the lyric we clicked!
+            // We can safely lift the block early.
+            m_seekIgnoreUntilMs = 0;
+        }
+    }
+
+    if (idx == m_lyricsCurrentIndex)
+        return;
+
+    const int prevIndex = m_lyricsCurrentIndex;
+    m_lyricsCurrentIndex = idx;
+    startLyricsHighlightAnimation(prevIndex, m_lyricsCurrentIndex);
+
+    const bool suspended = lyricsAutoScrollSuspended();
+    if (suspended)
+        m_lyricsAutoScrollSuppressed = true;
+    if (!suspended)
+        animateLyricsScrollTo(m_lyricsCurrentIndex);
+}
+
+void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
+{
+    if (visible == m_lyricsVisible)
+        return;
+
+    m_lyricsVisible = visible;
+    const int targetWidth = visible ? kLyricsPanelWidth : 0;
+    const double targetOpacity = visible ? 1.0 : 0.0;
+
+    if (m_card)
+        m_card->adjustSize();
+
+    if (!animate || !m_lyricsPanel || !m_lyricsOpacity) {
+        if (m_lyricsPanel)
+            m_lyricsPanel->setMinimumWidth(targetWidth);
+        if (m_lyricsPanel)
+            m_lyricsPanel->setMaximumWidth(targetWidth);
+        if (m_lyricsOpacity)
+            m_lyricsOpacity->setOpacity(targetOpacity);
+        if (m_card) {
+            const int cardHeight = m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height();
+            m_card->resize(kCardWidth + targetWidth, cardHeight);
+            m_card->move(cardPosForWidth(kCardWidth + targetWidth));
+        }
+        updateLyricsButtonState();
+        if (visible && m_lyricsSyncedAvailable)
+            animateLyricsScrollTo(m_lyricsCurrentIndex);
+        return;
+    }
+
+    auto *group = new QParallelAnimationGroup(this);
+
+    auto *minWidthAnim = new QPropertyAnimation(m_lyricsPanel, "minimumWidth", group);
+    minWidthAnim->setStartValue(m_lyricsPanel->minimumWidth());
+    minWidthAnim->setEndValue(targetWidth);
+    minWidthAnim->setDuration(320);
+    minWidthAnim->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(minWidthAnim);
+
+    auto *maxWidthAnim = new QPropertyAnimation(m_lyricsPanel, "maximumWidth", group);
+    maxWidthAnim->setStartValue(m_lyricsPanel->maximumWidth());
+    maxWidthAnim->setEndValue(targetWidth);
+    maxWidthAnim->setDuration(320);
+    maxWidthAnim->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(maxWidthAnim);
+
+    auto *fadeAnim = new QPropertyAnimation(m_lyricsOpacity, "opacity", group);
+    fadeAnim->setStartValue(m_lyricsOpacity->opacity());
+    fadeAnim->setEndValue(targetOpacity);
+    fadeAnim->setDuration(260);
+    fadeAnim->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(fadeAnim);
+
+    const int cardHeight = m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height();
+    const QPoint targetPos = cardPosForWidth(kCardWidth + targetWidth);
+    const QRect targetGeom(targetPos, QSize(kCardWidth + targetWidth, cardHeight));
+    auto *geomAnim = new QPropertyAnimation(m_card, "geometry", group);
+    geomAnim->setStartValue(m_card->geometry());
+    geomAnim->setEndValue(targetGeom);
+    geomAnim->setDuration(320);
+    geomAnim->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(geomAnim);
+
+    connect(group, &QParallelAnimationGroup::finished, this, [this, targetWidth, visible] {
+        if (m_lyricsPanel) {
+            m_lyricsPanel->setMinimumWidth(targetWidth);
+            m_lyricsPanel->setMaximumWidth(targetWidth);
+        }
+        if (m_lyricsList)
+            m_lyricsList->doItemsLayout();
+        if (visible && m_lyricsSyncedAvailable)
+            animateLyricsScrollTo(m_lyricsCurrentIndex);
+    });
+
+    group->start(QAbstractAnimation::DeleteWhenStopped);
+    updateLyricsButtonState();
+}
+
+void FullscreenPlayer::rebuildLyricsList()
+{
+    if (!m_lyricsList)
+        return;
+
+    m_lyricsList->clear();
+    const QStringList lines = m_lyricsSyncedAvailable ? m_lyricsSyncedLines : m_lyricsPlainLines;
+    if (lines.isEmpty()) {
+        if (m_lyricsRequestInFlight) {
+            auto *item = new QListWidgetItem("", m_lyricsList);
+            item->setTextAlignment(Qt::AlignCenter);
+            QFont font = item->font();
+            font.setPixelSize(kLyricsFontSize);
+            item->setFont(font);
+            item->setForeground(QColor(200, 200, 200));
+        }
+        m_lyricsList->setCurrentRow(-1);
+        return;
+    }
+
+    QFont baseFont = m_lyricsList->font();
+    baseFont.setPixelSize(kLyricsFontSize);
+    baseFont.setBold(false);
+
+    for (const QString &line : lines) {
+        const QString shown = line.isEmpty() ? QStringLiteral(" ") : line;
+        auto *item = new QListWidgetItem(shown, m_lyricsList);
+        item->setTextAlignment(Qt::AlignCenter);
+        item->setFont(baseFont);
+        item->setForeground(QColor(230, 230, 230));
+    }
+
+    m_lyricsCurrentIndex = -1;
+    m_lyricsList->setCurrentRow(-1);
+
+    if (m_lyricsDelegate)
+    {
+        m_lyricsDelegate->setIndices(-1, -1);
+        m_lyricsDelegate->setProgress(1.0);
+    }
+}
+
+void FullscreenPlayer::animateLyricsScrollTo(int logicalIndex, bool force, bool instant)
+{
+    if (!m_lyricsVisible || !m_lyricsList)
+        return;
+
+    if (force) {
+        m_lyricsHoldUntilMs = 0;
+        m_lyricsAutoScrollSuppressed = false;
+    } else if (lyricsAutoScrollSuspended()) {
+        return;
+    }
+
+    const int target = lyricsScrollTargetForIndex(logicalIndex);
+    if (target < 0)
+        return;
+
+    auto *bar = m_lyricsList->verticalScrollBar();
+
+    if (instant) {
+        if (m_lyricsScrollAnim) m_lyricsScrollAnim->stop();
+        bar->setValue(target);
+        return;
+    }
+
+    int currentVal = bar->value();
+    if (target == currentVal)
+        return;
+
+    if (!m_lyricsScrollAnim)
+        m_lyricsScrollAnim = new QPropertyAnimation(bar, "value", this);
+
+    m_lyricsScrollAnim->stop();
+    m_lyricsScrollAnim->setStartValue(currentVal);
+    m_lyricsScrollAnim->setEndValue(target);
+    m_lyricsScrollAnim->setDuration(450);
+    m_lyricsScrollAnim->setEasingCurve(QEasingCurve::InOutSine);
+    m_lyricsScrollAnim->start();
+}
+void FullscreenPlayer::startLyricsHighlightAnimation(int prevIndex, int nextIndex)
+{
+    if (!m_lyricsList || !m_lyricsDelegate)
+        return;
+
+    m_lyricsPrevIndex = prevIndex;
+    m_lyricsDelegate->setIndices(nextIndex, prevIndex);
+
+    if (m_lyricsHighlightAnim) {
+        m_lyricsHighlightAnim->stop();
+        m_lyricsHighlightAnim->setStartValue(0.0);
+        m_lyricsHighlightAnim->setEndValue(1.0);
+        m_lyricsDelegate->setProgress(0.0);
+        m_lyricsHighlightAnim->start();
+    }
+}
+
+int FullscreenPlayer::lyricsScrollTargetForIndex(int index) const
+{
+    if (!m_lyricsList) return -1;
+    if (index < 0 || index >= m_lyricsList->count()) return -1;
+
+    QListWidgetItem *item = m_lyricsList->item(index);
+    if (!item) return -1;
+
+    m_lyricsList->doItemsLayout();
+    QRect rect = m_lyricsList->visualItemRect(item);
+    if (!rect.isValid()) return -1;
+
+    int extraTop = (index == 0) ? qMax(0, m_lyricsList->viewport()->height() / 2 - 20) : 0;
+    int extraBottom = (index == m_lyricsList->count() - 1) ? qMax(0, m_lyricsList->viewport()->height() / 2 - 20) : 0;
+
+    QRect contentRect = rect;
+    contentRect.setTop(contentRect.top() + extraTop);
+    contentRect.setBottom(contentRect.bottom() - extraBottom);
+
+    auto *bar = m_lyricsList->verticalScrollBar();
+    int absoluteCenterY = bar->value() + contentRect.center().y();
+    int target = absoluteCenterY - m_lyricsList->viewport()->height() / 2;
+
+    return qBound(bar->minimum(), target, bar->maximum());
+}
+
+QPoint FullscreenPlayer::cardPosForWidth(int cardWidth) const
+{
+    const int cardHeight = m_card ? (m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height()) : 0;
+    const int x = (width() - cardWidth) / 2;
+    const int y = (height() - cardHeight) / 2;
+    return { x, y };
+}
+
+void FullscreenPlayer::suspendLyricsAutoScroll()
+{
+    m_lyricsHoldUntilMs = QDateTime::currentMSecsSinceEpoch() + 2000;
+    m_lyricsAutoScrollSuppressed = true;
+}
+
+bool FullscreenPlayer::lyricsAutoScrollSuspended() const
+{
+    return QDateTime::currentMSecsSinceEpoch() < m_lyricsHoldUntilMs;
+}
+
+void FullscreenPlayer::maybeResumeLyricsAutoScroll()
+{
+    if (!m_lyricsAutoScrollSuppressed)
+        return;
+    if (!m_lyricsVisible || !m_lyricsSyncedAvailable)
+        return;
+    if (lyricsAutoScrollSuspended())
+        return;
+    if (m_lyricsCurrentIndex < 0)
+        return;
+
+    m_lyricsAutoScrollSuppressed = false;
+    animateLyricsScrollTo(m_lyricsCurrentIndex);
 }
 
 void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
@@ -671,12 +1652,13 @@ void FullscreenPlayer::animateTick()
     m_phase += 0.015f;
     if (m_bgWidget)
         m_bgWidget->setTime(m_phase);
+    maybeResumeLyricsAutoScroll();
 }
 
 void FullscreenPlayer::layoutCard()
 {
     m_card->adjustSize();
-    m_card->move((width() - m_card->width()) / 2, (height() - m_card->height()) / 2);
+    m_card->move(cardPosForWidth(m_card->width()));
 }
 
 void FullscreenPlayer::updateCoverWidget()
@@ -691,3 +1673,4 @@ void FullscreenPlayer::updateCoverWidget()
     m_coverLabel->setPixmap(rounded(px, 24));
     m_coverLabel->setFixedSize(px.size());
 }
+

@@ -39,6 +39,12 @@ const QString kLikedPlaylistName = QStringLiteral("liked");
 const QString kAllPlaylistVirtualId = QStringLiteral("__all__");
 const QString kAllPlaylistDisplayName = QStringLiteral("all");
 constexpr int kPlaylistColumnSettingsSchema = 3;
+constexpr int kPlaylistWarmupCount = 24;
+constexpr int kDeferredMetadataBatchSize = 24;
+constexpr int kDeferredMetadataBatchDelayMs = 80;
+constexpr int kDeferredMetadataMaxTracks = 120;
+constexpr int kGlobalMetadataPreloadBatchSize = 16;
+constexpr int kGlobalMetadataPreloadBatchDelayMs = 250;
 const char *kSeekDiagBuildMarker = "seek-fix-2026-04-14-r3";
 }
 
@@ -1378,7 +1384,7 @@ void MusicPlayer::onPlaylistSelected(int row)
 
     // Start metadata warmup immediately on playlist enter (no scroll required).
     if (m_metadataThread && !m_tracks.isEmpty()) {
-        const int warmupCount = qMin(120, m_tracks.count());
+        const int warmupCount = qMin(kPlaylistWarmupCount, m_tracks.count());
         QStringList warmup;
         warmup.reserve(warmupCount);
         for (int i = 0; i < warmupCount; ++i) {
@@ -1548,7 +1554,7 @@ void MusicPlayer::processGlobalMetadataPreloadBatch()
         return;
     }
 
-    const int endIndex = qMin(m_globalMetadataPreloadIndex + 320,
+    const int endIndex = qMin(m_globalMetadataPreloadIndex + kGlobalMetadataPreloadBatchSize,
                               m_globalMetadataPreloadPaths.size());
     QStringList batch;
     batch.reserve(endIndex - m_globalMetadataPreloadIndex);
@@ -1567,7 +1573,7 @@ void MusicPlayer::processGlobalMetadataPreloadBatch()
     }
 
     if (m_globalMetadataPreloadTimer)
-        m_globalMetadataPreloadTimer->start(2);
+        m_globalMetadataPreloadTimer->start(kGlobalMetadataPreloadBatchDelayMs);
 }
 
 QStringList MusicPlayer::collectUniqueTrackPathsForBackgroundPreload() const
@@ -1909,6 +1915,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             QPixmap cover;
             QString title  = "No track playing";
             QString artist;
+            QString album;
             int     dur    = 0;
             if (track) {
                 cover  = track->metadata().coverPixmap();
@@ -1916,6 +1923,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
                          ? QFileInfo(track->filePath()).baseName()
                          : track->metadata().title;
                 artist = track->metadata().artist;
+                album  = track->metadata().album;
                 dur    = static_cast<int>(track->metadata().duration);
             }
             bool playing = m_engine && m_engine->state() == GaplessAudioEngine::Playing;
@@ -1923,7 +1931,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             int  vol     = m_volumeSlider->value();
 
             m_fullscreenPlayer->setGeometry(rect());
-            m_fullscreenPlayer->openFor(cover, title, artist, dur, pos, playing, vol);
+            m_fullscreenPlayer->openFor(cover, title, artist, album, dur, pos, playing, vol);
             return true;
         }
     }
@@ -2442,6 +2450,8 @@ void MusicPlayer::startDeferredMetadataLoading(int startIndex)
 
     m_deferredMetadataPlaylistId = m_currentPlaylistId;
     m_deferredMetadataIndex = qBound(0, startIndex, m_tracks.count() - 1);
+    m_deferredMetadataStopIndex = qMin(m_deferredMetadataIndex + kDeferredMetadataMaxTracks,
+                                       m_tracks.count());
     if (!m_deferredMetadataTimer->isActive())
         m_deferredMetadataTimer->start(0);
 }
@@ -2451,6 +2461,7 @@ void MusicPlayer::stopDeferredMetadataLoading()
     if (m_deferredMetadataTimer)
         m_deferredMetadataTimer->stop();
     m_deferredMetadataIndex = -1;
+    m_deferredMetadataStopIndex = -1;
     m_deferredMetadataPlaylistId.clear();
     if (m_metadataThread)
         m_metadataThread->clearTrackQueue();
@@ -2464,15 +2475,20 @@ void MusicPlayer::processDeferredMetadataBatch()
 
     if (m_deferredMetadataIndex < 0
         || m_deferredMetadataIndex >= m_tracks.count()
+        || m_deferredMetadataStopIndex < 0
+        || m_deferredMetadataIndex >= m_deferredMetadataStopIndex
         || m_deferredMetadataPlaylistId != m_currentPlaylistId) {
         stopDeferredMetadataLoading();
         return;
     }
 
-    // Queue larger batches so full-playlist preload starts faster.
-    const int batchSize = 140;
+    const int batchSize = kDeferredMetadataBatchSize;
     QStringList batch;
-    for (int i = 0; i < batchSize && m_deferredMetadataIndex < m_tracks.count(); ++i) {
+    for (int i = 0;
+         i < batchSize
+             && m_deferredMetadataIndex < m_tracks.count()
+             && m_deferredMetadataIndex < m_deferredMetadataStopIndex;
+         ++i) {
         TrackItem *track = m_tracks[m_deferredMetadataIndex];
         if (track && !track->isMetadataLoaded()) {
             batch.append(track->filePath());
@@ -2484,12 +2500,13 @@ void MusicPlayer::processDeferredMetadataBatch()
         m_metadataThread->queueRange(batch);
     }
 
-    if (m_deferredMetadataIndex >= m_tracks.count()) {
+    if (m_deferredMetadataIndex >= m_tracks.count()
+        || (m_deferredMetadataStopIndex >= 0 && m_deferredMetadataIndex >= m_deferredMetadataStopIndex)) {
         stopDeferredMetadataLoading();
         return;
     }
 
-    m_deferredMetadataTimer->start(1); // Keep queue saturated without waiting for scroll
+    m_deferredMetadataTimer->start(kDeferredMetadataBatchDelayMs);
 }
 
 // ============= Scroll-based Lazy Loading =============
@@ -3486,15 +3503,18 @@ void MusicPlayer::updateDuration(qint64 duration) {
             if (m_fullscreenPlayer) {
                 QString title;
                 QString artist;
+                QString album;
                 if (playingIdx >= 0) {
                     title = m_tracks[playingIdx]->metadata().title;
                     artist = m_tracks[playingIdx]->metadata().artist;
+                    album = m_tracks[playingIdx]->metadata().album;
                 }
                 if (title.isEmpty()) title = QFileInfo(m_engine->currentFilePath()).baseName();
 
                 m_fullscreenPlayer->updateTrack(m_bottomCoverLabel->pixmap(),
                                                 title,
                                                 artist,
+                                                album,
                                                 static_cast<int>(cueDur));
             }
         }
@@ -4287,7 +4307,7 @@ void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)
         m_bottomCoverLabel->setPixmap(cover.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
     if (m_fullscreenPlayer) {
-        m_fullscreenPlayer->updateTrack(cover, title, md.artist,
+        m_fullscreenPlayer->updateTrack(cover, title, md.artist, md.album,
                                         static_cast<int>(md.duration));
         m_fullscreenPlayer->updateShuffleState(m_shuffleEnabled, m_shuffleMode);
         m_fullscreenPlayer->updateRepeatState(m_repeatMode);

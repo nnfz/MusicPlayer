@@ -164,6 +164,7 @@ private:
     int m_currentIndex;
     int m_metadataLoadIndex;
     int m_deferredMetadataIndex = -1;
+    int m_deferredMetadataStopIndex = -1;
     QString m_deferredMetadataPlaylistId;
     QString m_forceMetadataLoadPlaylistId;
     QStringList m_globalMetadataPreloadPaths;

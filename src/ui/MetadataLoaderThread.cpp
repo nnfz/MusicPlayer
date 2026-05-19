@@ -162,7 +162,7 @@ void MetadataLoaderThread::setPriority(QThread::Priority priority)
 
 void MetadataLoaderThread::run()
 {
-    setPriority(QThread::HighPriority);
+    setPriority(QThread::LowPriority);
 
     while (true) {
         QStringList pathsToProcess;

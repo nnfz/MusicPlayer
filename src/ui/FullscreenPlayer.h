@@ -9,11 +9,21 @@
 #include <QImage>
 #include <QColor>
 #include <QVector>
+#include <QStringList>
 #include <QPropertyAnimation>
 #include <QParallelAnimationGroup>
 #include <QGraphicsOpacityEffect>
 #include <QMouseEvent>
 #include "ClickableSlider.h"
+
+class QNetworkAccessManager;
+class QNetworkReply;
+class QUrl;
+class QListWidget;
+class QPropertyAnimation;
+class QScrollBar;
+class QVariantAnimation;
+class LyricsItemDelegate;
 
 // ---------------------------------------------------------------------------
 // MarqueeLabel — прокручивающийся текст
@@ -69,10 +79,10 @@ public:
     explicit FullscreenPlayer(QWidget *parent = nullptr);
 
     void openFor(const QPixmap &cover, const QString &title, const QString &artist,
-                 int durationMs, int positionMs, bool isPlaying, int volume);
+                 const QString &album, int durationMs, int positionMs, bool isPlaying, int volume);
 
     void updateTrack(const QPixmap &cover, const QString &title,
-                     const QString &artist, int durationMs);
+                     const QString &artist, const QString &album, int durationMs);
     void updatePosition(int ms);
     void updatePlayState(bool playing);
     void updateVolume(int value);
@@ -105,16 +115,37 @@ protected:
 
 private slots:
     void animateTick();
+    void toggleLyrics();
+    void onLyricsReplyFinished();
 
 private:
     void extractPalette(const QPixmap &albumArt);
     void updateNoiseFrame();
     void layoutCard();
     void updateCoverWidget();
+    void requestLyrics();
+    void sendLyricsRequest(const QUrl &url);
+    void applyLyrics(const QString &synced, const QString &plain, bool instrumental);
+    void parseSyncedLyrics(const QString &text);
+    void parsePlainLyrics(const QString &text);
+    void updateLyricsButtonState();
+    void updateLyricsHighlight(int ms);
+    void setLyricsVisible(bool visible, bool animate);
+    void rebuildLyricsList();
+    void startLyricsHighlightAnimation(int prevIndex, int nextIndex);
+    void animateLyricsScrollTo(int index, bool force = false, bool instant = false);
+    int lyricsScrollTargetForIndex(int index) const;
+    QPoint cardPosForWidth(int cardWidth) const;
+    void suspendLyricsAutoScroll();
+    bool lyricsAutoScrollSuspended() const;
+    void maybeResumeLyricsAutoScroll();
+    bool hasLyrics() const;
 
     class FullscreenBackgroundGL;
 
     QWidget               *m_card         { nullptr };
+    QWidget               *m_mainPanel    { nullptr };
+    QWidget               *m_lyricsPanel  { nullptr };
     FullscreenBackgroundGL *m_bgWidget    { nullptr };
     QGraphicsOpacityEffect *m_cardOpacity  { nullptr };
 
@@ -134,6 +165,12 @@ private:
     QPushButton           *m_closeBtn     { nullptr };
     QPushButton           *m_muteBtn      { nullptr };
     ClickableSlider       *m_volumeSlider { nullptr };
+    QListWidget           *m_lyricsList   { nullptr };
+    QGraphicsOpacityEffect *m_lyricsOpacity { nullptr };
+    QPropertyAnimation    *m_lyricsScrollAnim { nullptr };
+    QVariantAnimation     *m_lyricsHighlightAnim { nullptr };
+    LyricsItemDelegate    *m_lyricsDelegate { nullptr };
+    bool                   m_lyricsVisible { false };
 
     QTimer                *m_animTimer    { nullptr };
     QParallelAnimationGroup *m_closeAnim  { nullptr };
@@ -142,9 +179,32 @@ private:
     QPixmap                m_rawCover;
     int                    m_durationMs   { 0 };
     bool                   m_userSeeking  { false };
+    qint64                 m_seekIgnoreUntilMs { 0 };
+    int                    m_expectedSeekPositionMs { -1 };
     bool                   m_isOpen       { false };
     int                    m_volumeValue  { 0 };
     float                  m_lastLevel    { 0.0f };
+    int                    m_lastPositionMs { 0 };
+
+    QString                m_trackTitle;
+    QString                m_trackArtist;
+    QString                m_trackAlbum;
+    int                    m_trackDurationSec { 0 };
+
+    QNetworkAccessManager *m_lyricsNet    { nullptr };
+    QNetworkReply         *m_lyricsReply  { nullptr };
+    int                    m_lyricsRequestToken { 0 };
+    bool                   m_lyricsRequestInFlight { false };
+    QString                m_lyricsKey;
+    bool                   m_lyricsSyncedAvailable { false };
+    QStringList            m_lyricsPlainLines;
+    QStringList            m_lyricsSyncedLines;
+    QVector<int>           m_lyricsSyncedTimes;
+    int                    m_lyricsCurrentIndex { -1 };
+    int                    m_lyricsPrevIndex { -1 };
+    qreal                  m_lyricsHighlightProgress { 1.0 };
+    qint64                 m_lyricsHoldUntilMs { 0 };
+    bool                   m_lyricsAutoScrollSuppressed { false };
 
     QVector<QColor>        m_palette;
     QImage                 m_noiseFrame;
