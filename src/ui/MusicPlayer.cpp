@@ -690,6 +690,12 @@ void MusicPlayer::setupConnections()
 
         // Set m_seekPending BEFORE seek to prevent stale position updates
         m_seekPending = true;
+        // Pre-anchor the fullscreen lyrics interpolator at the seek target so
+        // it doesn't drift further from the stale pre-seek anchor while the
+        // engine catches up. Without this, fast successive seeks could leave
+        // lyrics frozen on an old line until the engine settled.
+        if (m_fullscreenPlayer)
+            m_fullscreenPlayer->updatePosition(seekTargetMs);
         seek(seekTargetMs);
         // Slider will update naturally as decoder catches up with audio
         QTimer::singleShot(300, this, [this, releaseEpoch]() {
@@ -3451,7 +3457,13 @@ void MusicPlayer::updatePosition(qint64 position) {
         // Don't update time label during seek - position values are unreliable
         if (!m_seekPending)
             m_currentTimeLabel->setText(formatTime(rel));
-        if (m_fullscreenPlayer && !m_seekPending)
+        // Always forward to fullscreen player — lyrics need the updates to
+        // re-anchor the interpolator. Without this, a main-window seek would
+        // leave the fullscreen interpolator running forward from a stale
+        // anchor for 300ms, then desync until updatePosition resumes, which
+        // sometimes left the lyrics view permanently stuck on the wrong line
+        // after multiple consecutive seeks.
+        if (m_fullscreenPlayer)
             m_fullscreenPlayer->updatePosition(static_cast<int>(rel));
         return;
     }
@@ -3461,7 +3473,8 @@ void MusicPlayer::updatePosition(qint64 position) {
     if (!m_seekPending)
         m_currentTimeLabel->setText(formatTime(position));
 
-    if (m_fullscreenPlayer && !m_seekPending)
+    // See comment above — fullscreen lyrics interpolator must always re-anchor.
+    if (m_fullscreenPlayer)
         m_fullscreenPlayer->updatePosition(static_cast<int>(position));
 
     if (m_userSeeking || m_seekPending) {

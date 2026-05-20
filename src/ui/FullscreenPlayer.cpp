@@ -556,6 +556,14 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsOpacity = new QGraphicsOpacityEffect(m_lyricsPanel);
     m_lyricsOpacity->setOpacity(0.0);
     m_lyricsPanel->setGraphicsEffect(m_lyricsOpacity);
+    // Nesting QGraphicsOpacityEffect inside another (m_cardOpacity already
+    // wraps m_card, which contains m_lyricsPanel) makes Qt re-enter paint on
+    // the same offscreen device — visible in the console as
+    // "QPainter::begin: A paint device can only be painted by one painter at
+    // a time" plus "Painter not active" follow-ups. We disable the inner
+    // effect except while the lyrics show/hide animation is actively running,
+    // so steady-state painting goes through a single effect pipeline.
+    m_lyricsOpacity->setEnabled(false);
 
     m_bgWidget = new FullscreenBackgroundGL(this);
     m_bgWidget->setGeometry(rect());
@@ -598,7 +606,18 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     connect(m_seekSlider, &QSlider::sliderPressed,  this, [this] { m_userSeeking = true; });
     connect(m_seekSlider, &QSlider::sliderReleased, this, [this] {
         m_userSeeking = false;
-        emit seekRequested(m_seekSlider->value());
+        const int target = m_seekSlider->value();
+        // Pre-anchor the interpolator at the new position so the lyric
+        // highlight doesn't lag waiting for the engine's first post-seek
+        // positionChanged. Also clear any stale lyric-click ignore window so
+        // the next position update isn't blocked by tolerance check.
+        m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch();
+        m_positionAnchorAudioMs = target;
+        m_lastPositionMs = target;
+        m_seekIgnoreUntilMs = 0;
+        emit seekRequested(target);
+        if (m_lyricsSyncedAvailable && m_lyricsVisible)
+            updateLyricsHighlight(target);
     });
     connect(m_seekSlider, &QSlider::sliderMoved, this, [this](int v) {
         m_currentTime->setText(fmt(v));
@@ -722,7 +741,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
         // Short ignore window: engine usually catches up within 100-300ms.
         // 600ms is plenty without freezing the UI for seconds on slow seeks.
         m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 600;
+        // Kill any in-flight scroll/highlight anim so we don't compound
+        // motions on top of the snap.
         if (m_lyricsScrollAnim) m_lyricsScrollAnim->stop();
+        if (m_lyricsHighlightAnim) m_lyricsHighlightAnim->stop();
         startLyricsHighlightAnimation(m_lyricsCurrentIndex, row);
         m_lyricsCurrentIndex = row;
         // Re-anchor interpolation so updateLyricsHighlight doesn't bounce away
@@ -731,7 +753,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
         m_positionAnchorAudioMs = targetMs;
         m_lastPositionMs = targetMs;
         emit seekRequested(targetMs);
-        animateLyricsScrollTo(row, true, false);
+        // INSTANT snap on click — matches Spotify/Apple Music feel and
+        // prevents the visible "double scroll" where the row first appeared
+        // to scroll one distance and then continue another.
+        animateLyricsScrollTo(row, true, true);
     });
 
     m_lyricsList->viewport()->installEventFilter(this);
@@ -889,12 +914,21 @@ void FullscreenPlayer::updatePosition(int ms)
     }
 
     if (QDateTime::currentMSecsSinceEpoch() < m_seekIgnoreUntilMs) {
-        // Engine still settling after a click-to-seek. Accept once it's close
-        // to the target — tolerance tightened to 500ms (was 1500) so we don't
-        // accidentally lock onto a different line near a long instrumental gap.
-        if (std::abs(ms - m_expectedSeekPositionMs) < 500) {
+        const int delta = std::abs(ms - m_expectedSeekPositionMs);
+        if (delta < 500) {
+            // Engine settled at the click-to-seek target — release the lock.
+            m_seekIgnoreUntilMs = 0;
+        } else if (delta > 5000) {
+            // The user has clearly moved on (e.g. dragged the main seek bar
+            // to a totally different point). Drop the click-to-seek lock so
+            // the lyric highlight follows the new position immediately.
+            // Without this branch the lyric panel could appear "frozen" for
+            // up to 600ms after every fast seek combo.
             m_seekIgnoreUntilMs = 0;
         } else {
+            // Engine is settling within a few hundred ms of the original
+            // target — keep blocking briefly to prevent the highlight
+            // bouncing to a neighboring lyric and back.
             return;
         }
     }
@@ -1312,10 +1346,37 @@ void FullscreenPlayer::updateLyricsHighlight(int ms)
     startLyricsHighlightAnimation(prevIndex, m_lyricsCurrentIndex);
 
     const bool suspended = lyricsAutoScrollSuspended();
-    if (suspended)
+    if (suspended) {
         m_lyricsAutoScrollSuppressed = true;
-    if (!suspended)
-        animateLyricsScrollTo(m_lyricsCurrentIndex);
+        return;
+    }
+
+    if (idx < 0) {
+        // We're before the first synced line (intro / instrumental at the
+        // start of the track). The correct visual is the "rest state" of the
+        // list: scrollbar at the very top, so the inflated row-0 padding
+        // (kLyricsPanelHalfHeight) appears at the viewport top, with the
+        // first lyric naturally sitting at viewport center but NOT yet
+        // highlighted. animateLyricsScrollTo(0) would compute a scroll that
+        // centres row 0's CONTENT — and because row 0's sizeHint already
+        // includes top padding, that target shifted the whole text upward,
+        // making it look like row 0 was already playing. Scrolling the bar
+        // to 0 instead gives the proper "lyrics about to start" framing.
+        if (auto *bar = m_lyricsList->verticalScrollBar()) {
+            if (m_lyricsScrollAnim) m_lyricsScrollAnim->stop();
+            bar->setValue(bar->minimum());
+        }
+        return;
+    }
+
+    // Jumps of more than a few lines are almost always the result of a seek;
+    // a smooth 380ms scroll across many rows looks like a fast jittery scroll
+    // (and never lands on the right place because the line keeps changing).
+    // Snap instantly for big jumps, animate only for natural line-by-line
+    // playback advancement.
+    const int jump = std::abs(idx - prevIndex);
+    const bool isBigJump = (prevIndex < 0) || (jump > 3);
+    animateLyricsScrollTo(m_lyricsCurrentIndex, false, isBigJump);
 }
 
 void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
@@ -1335,8 +1396,12 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
             m_lyricsPanel->setMinimumWidth(targetWidth);
         if (m_lyricsPanel)
             m_lyricsPanel->setMaximumWidth(targetWidth);
-        if (m_lyricsOpacity)
+        if (m_lyricsOpacity) {
             m_lyricsOpacity->setOpacity(targetOpacity);
+            // No animation in flight, so the nested effect can stay disabled
+            // — m_cardOpacity already covers the whole card.
+            m_lyricsOpacity->setEnabled(false);
+        }
         if (m_card) {
             const int cardHeight = m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height();
             m_card->resize(kCardWidth + targetWidth, cardHeight);
@@ -1347,6 +1412,12 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
             animateLyricsScrollTo(m_lyricsCurrentIndex);
         return;
     }
+
+    // Enable the inner opacity effect ONLY while the fade animation runs.
+    // Steady state keeps it disabled to avoid nested QGraphicsEffect
+    // re-entrancy warnings ("paint device can only be painted by one painter
+    // at a time" + "Painter not active").
+    m_lyricsOpacity->setEnabled(true);
 
     auto *group = new QParallelAnimationGroup(this);
 
@@ -1386,6 +1457,11 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
             m_lyricsPanel->setMinimumWidth(targetWidth);
             m_lyricsPanel->setMaximumWidth(targetWidth);
         }
+        // Animation is done — turn the inner opacity effect off again so the
+        // ongoing per-frame repaints (60Hz lyric interpolation) don't re-enter
+        // the nested-effect paint pipeline.
+        if (m_lyricsOpacity)
+            m_lyricsOpacity->setEnabled(false);
         if (m_lyricsList)
             m_lyricsList->doItemsLayout();
         if (visible && m_lyricsSyncedAvailable) {
