@@ -202,8 +202,13 @@ void GaplessAudioEngine::applyPlaybackRate(HSTREAM stream)
 #ifdef MUSICPLAYER_HAS_BASS
     if (stream) {
         // BASS_ATTRIB_TEMPO_FREQ expects absolute frequency in Hz.
-        // We assume 44100 as base since our mixer and streams are created with it.
-        float freq = 44100.0f * m_playbackRate;
+        float nativeFreq = 44100.0f;
+        BASS_CHANNELINFO info;
+        if (BASS_ChannelGetInfo(stream, &info)) {
+            nativeFreq = static_cast<float>(info.freq);
+        }
+
+        float freq = nativeFreq * m_playbackRate;
         BASS_ChannelSetAttribute(stream, BASS_ATTRIB_TEMPO_FREQ, freq);
         
         // Disable tempo (time-stretching) to achieve the "tape-style" resampled sound
