@@ -4,7 +4,6 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 CONFIG += no_include_pwd
-CONFIG -= qt_entry_point
 
 TARGET = MusicPlayer
 TEMPLATE = app
@@ -38,7 +37,7 @@ win32 {
     exists($$BASS_DIR/include/bass.h) {
         DEFINES += MUSICPLAYER_HAS_BASS
         INCLUDEPATH += $$BASS_DIR/include
-        LIBS += -L$$BASS_DIR/lib -lbass -lbassflac -lbass_fx
+        LIBS += -L$$BASS_DIR/lib -lbass -lbassflac -lbass_fx -lbassmix
 
         BASS_BIN = $$shell_path($$BASS_DIR/bin)
         OUT_BIN = $$shell_path($$OUT_PWD)

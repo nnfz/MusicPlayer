@@ -28,26 +28,11 @@ GaplessAudioEngine::~GaplessAudioEngine()
 void GaplessAudioEngine::initBass()
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    qDebug() << "[bass] Initializing BASS...";
     // Load plugins
-    const char* plugins[] = {
-        "bassflac.dll", "bass_fx.dll", "bassape.dll", "bassalac.dll",
-        "bassopus.dll", "basswv.dll", "bassaac.dll", "basswma.dll",
-        "bassmidi.dll", "bassmix.dll", "basshls.dll"
-    };
-
-    for (const char* plugin : plugins) {
-        HPLUGIN h = BASS_PluginLoad(plugin, 0);
-        if (h) qDebug() << "[bass] Plugin loaded:" << plugin;
-        else qDebug() << "[bass] Failed to load plugin (or not found):" << plugin;
-    }
+    BASS_PluginLoad("bassflac.dll", 0);
+    BASS_PluginLoad("bass_fx.dll", 0);
 
     // Initialize default device
-    if (BASS_Init(-1, 44100, 0, nullptr, nullptr)) {
-        qDebug() << "[bass] Default device initialized successfully";
-    } else {
-        qWarning() << "[bass] BASS_Init failed, error code:" << BASS_ErrorGetCode();
-    }
     if (!BASS_Init(-1, 44100, BASS_DEVICE_LATENCY, 0, NULL)) {
         qWarning() << "BASS_Init failed! Error:" << BASS_ErrorGetCode();
     } else {

@@ -117,6 +117,7 @@ MusicPlayer::MusicPlayer(QWidget *parent)
     , m_userSeeking(false)
     , m_seekPending(false)
 {
+    qDebug() << "[init] MusicPlayer constructor BEGIN";
     qInfo() << "[seek-ui] build marker" << kSeekDiagBuildMarker;
 
     m_engine = new GaplessAudioEngine(this);
@@ -280,6 +281,7 @@ MusicPlayer::MusicPlayer(QWidget *parent)
     #endif
     updateLikeButtonState();
     scheduleGlobalMetadataPreload(350);
+    qDebug() << "[init] MusicPlayer constructor END";
 }
 
 MusicPlayer::~MusicPlayer()

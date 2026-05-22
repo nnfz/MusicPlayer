@@ -13,6 +13,7 @@
 #include <bass.h>
 #include <bass_fx.h>
 #include <bassflac.h>
+#include <bassmix.h>
 #else
 typedef unsigned long HSTREAM;
 typedef unsigned long HDSP;
@@ -120,6 +121,7 @@ private:
     Equalizer *m_equalizer = nullptr;
     QTimer *m_positionTimer = nullptr;
 
+    HSTREAM m_mixer = 0;
     HSTREAM m_activeStream = 0;
     HSTREAM m_nextStream = 0;
     HSYNC m_endSync = 0;
