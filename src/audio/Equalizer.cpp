@@ -11,8 +11,10 @@ Equalizer::Equalizer(QObject *parent)
 {
     m_gains.fill(0.0);
     m_prevGains.fill(0.0);
-    m_transFramesLeft = 0;
+    m_coeffs.fill({});
+    m_prevCoeffs.fill({});
     updateActiveBands();
+    updateCoefficients();
     recalcAutoLevel();
 }
 
@@ -90,7 +92,15 @@ inline float Equalizer::processBiquad(BiquadState &s, const BiquadCoeffs &c, flo
 void Equalizer::updateActiveBands()
 {
     for (int i = 0; i < EQ_BAND_COUNT; ++i)
-        m_activeBand[i] = (std::abs(m_gains[i]) > 0.05);
+        m_activeBand[i] = (std::abs(m_gains[i]) > 0.05 || std::abs(m_prevGains[i]) > 0.05);
+}
+
+void Equalizer::updateCoefficients()
+{
+    for (int i = 0; i < EQ_BAND_COUNT; ++i) {
+        m_prevCoeffs[i] = makeCoeffsForGain(i, m_prevGains[i]);
+        m_coeffs[i] = makeCoeffsForGain(i, m_gains[i]);
+    }
 }
 
 void Equalizer::setSampleRate(int sampleRate)
@@ -99,7 +109,7 @@ void Equalizer::setSampleRate(int sampleRate)
     m_sampleRate = sampleRate;
     resetState();
     m_prevGains = m_gains;
-    m_transFramesLeft = 0;
+    updateCoefficients();
     recalcAutoLevel();
 }
 
@@ -110,6 +120,7 @@ void Equalizer::setBandGain(int band, double dBGain)
     const double oldGain = m_gains[band];
     if (std::abs(oldGain - dBGain) < 0.001) return;
 
+    QMutexLocker locker(&m_mutex);
     m_gains[band] = dBGain;
 
     if (m_batchMode) {
@@ -119,7 +130,9 @@ void Equalizer::setBandGain(int band, double dBGain)
 
     m_prevGains = m_gains;
     m_prevGains[band] = oldGain;
-    m_transFramesLeft = kTransitionFrames;
+    updateCoefficients();
+    for (auto &s : m_states)
+        s.transFramesLeft = kTransitionFrames;
     updateActiveBands();
     recalcAutoLevel();
     emit bandsChanged();
@@ -160,16 +173,21 @@ void Equalizer::setAutoLevelEnabled(bool on)
 
 void Equalizer::resetState()
 {
-    for (auto &ch : m_chState)
-        for (auto &s : ch)
-            s.x1 = s.x2 = s.y1 = s.y2 = 0;
-    m_transFramesLeft = 0;
+    QMutexLocker locker(&m_mutex);
+    m_states.clear();
     m_prevGains = m_gains;
+    updateCoefficients();
 }
 
 void Equalizer::prepareForSeek()
 {
     resetState();
+}
+
+void Equalizer::clearStreamState(void* streamId)
+{
+    QMutexLocker locker(&m_mutex);
+    m_states.remove(streamId);
 }
 
 bool Equalizer::hasOutput() const
@@ -188,7 +206,10 @@ void Equalizer::endBatch()
 {
     m_batchMode = false;
     if (m_coeffDirty) {
-        m_transFramesLeft = kTransitionFrames;
+        QMutexLocker locker(&m_mutex);
+        updateCoefficients();
+        for (auto &s : m_states)
+            s.transFramesLeft = kTransitionFrames;
         updateActiveBands();
         recalcAutoLevel();
         m_coeffDirty = false;
@@ -198,68 +219,94 @@ void Equalizer::endBatch()
 
 double Equalizer::computePeakGainDb() const
 {
-    double maxGain = 0.0;
+    double sumPos = 0.0;
     for (int i = 0; i < EQ_BAND_COUNT; ++i)
-        if (m_gains[i] > maxGain)
-            maxGain = m_gains[i];
-    return maxGain;
+        if (m_gains[i] > 0.0)
+            sumPos += m_gains[i];
+    
+    double maxSingle = 0.0;
+    for (int i = 0; i < EQ_BAND_COUNT; ++i)
+        maxSingle = std::max(maxSingle, m_gains[i]);
+
+    return std::max(maxSingle, sumPos * 0.5);
 }
 
 void Equalizer::recalcAutoLevel()
 {
     if (!m_autoLevelEnabled) return;
-    double maxGain = computePeakGainDb();
-    m_autoLevelDb = (maxGain > 0.0) ? -maxGain : 0.0;
+    double peak = computePeakGainDb();
+    m_autoLevelDb = (peak > 0.0) ? -peak : 0.0;
     m_autoLevelLinear = std::pow(10.0, m_autoLevelDb / 20.0);
     emit autoLevelChanged(m_autoLevelDb);
 }
 
-void Equalizer::ensureChannelState(int channels)
+Equalizer::StreamState& Equalizer::getStreamState(void* streamId, int channels)
 {
-    if (channels != m_lastChannels) {
-        m_lastChannels = channels;
-        m_chState.assign(static_cast<size_t>(channels), {});
+    auto it = m_states.find(streamId);
+    if (it == m_states.end() || it->lastChannels != channels) {
+        StreamState &s = m_states[streamId];
+        s.lastChannels = channels;
+        s.chState.assign(static_cast<size_t>(channels), {});
+        s.chStatePrev.assign(static_cast<size_t>(channels), {});
+        s.transFramesLeft = 0;
+        return s;
     }
+    return *it;
 }
 
-void Equalizer::process(float *samples, qint64 sampleCount, int channels)
+void Equalizer::process(void* streamId, float *samples, qint64 sampleCount, int channels)
 {
-    if (!m_enabled) {
-        resetState();
-        return;
-    }
+    if (!m_enabled) return;
     if (channels < 1 || sampleCount <= 0) return;
 
-    ensureChannelState(channels);
-
-    BiquadCoeffs activeCoeffs[EQ_BAND_COUNT];
-    bool bandActive[EQ_BAND_COUNT];
-    for (int b = 0; b < EQ_BAND_COUNT; ++b) {
-        bandActive[b] = (std::abs(m_gains[b]) > 0.05);
-        if (bandActive[b])
-            activeCoeffs[b] = makeCoeffsForGain(b, m_gains[b]);
-    }
+    QMutexLocker locker(&m_mutex);
+    StreamState &state = getStreamState(streamId, channels);
 
     const float gainLinear = static_cast<float>(
         m_preampLinear * (m_autoLevelEnabled ? m_autoLevelLinear : 1.0));
     const qint64 frames = sampleCount / channels;
 
     for (qint64 f = 0; f < frames; ++f) {
+        float mix = 1.0f;
+        if (state.transFramesLeft > 0) {
+            mix = 1.0f - (static_cast<float>(state.transFramesLeft) / kTransitionFrames);
+            state.transFramesLeft--;
+        }
+
         for (int c = 0; c < channels; ++c) {
-            float v = samples[f * channels + c];
-            for (int b = 0; b < EQ_BAND_COUNT; ++b) {
-                if (bandActive[b])
-                    v = processBiquad(m_chState[static_cast<size_t>(c)][static_cast<size_t>(b)], activeCoeffs[b], v);
+            float in = samples[f * channels + c];
+            float out = in;
+
+            if (mix < 1.0f) {
+                float vPrev = in;
+                float vCurr = in;
+                for (int b = 0; b < EQ_BAND_COUNT; ++b) {
+                    if (std::abs(m_prevGains[b]) > 0.05)
+                        vPrev = processBiquad(state.chStatePrev[c][b], m_prevCoeffs[b], vPrev);
+                    if (std::abs(m_gains[b]) > 0.05)
+                        vCurr = processBiquad(state.chState[c][b], m_coeffs[b], vCurr);
+                }
+                out = vPrev * (1.0f - mix) + vCurr * mix;
+            } else {
+                for (int b = 0; b < EQ_BAND_COUNT; ++b) {
+                    if (std::abs(m_gains[b]) > 0.05)
+                        out = processBiquad(state.chState[c][b], m_coeffs[b], out);
+                }
             }
-            samples[f * channels + c] = v * gainLinear;
+
+            float finalVal = out * gainLinear;
+            
+            // Soft limiter
+            if (finalVal > 1.0f) finalVal = 1.0f - std::exp(-(finalVal - 1.0f + 0.1f)) * 0.1f;
+            else if (finalVal < -1.0f) finalVal = -1.0f + std::exp(finalVal + 1.0f + 0.1f) * 0.1f;
+
+            samples[f * channels + c] = finalVal;
         }
     }
 
-    if (m_transFramesLeft > 0) {
-        m_transFramesLeft -= static_cast<int>(frames);
-        if (m_transFramesLeft <= 0) {
-            m_transFramesLeft = 0;
-            m_prevGains = m_gains;
-        }
+    if (state.transFramesLeft <= 0) {
+        state.transFramesLeft = 0;
+        for (int c = 0; c < channels; ++c)
+            state.chStatePrev[c] = state.chState[c];
     }
 }

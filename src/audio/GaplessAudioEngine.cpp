@@ -215,8 +215,8 @@ void GaplessAudioEngine::applyPlaybackRate(HSTREAM stream)
 void GaplessAudioEngine::setupDsp(HSTREAM stream)
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    if (stream && m_equalizer && m_equalizer->isEnabled())
-        m_eqDsp = BASS_ChannelSetDSP(stream, EqDspProc, this, 0);
+    if (stream && m_equalizer)
+        BASS_ChannelSetDSP(stream, EqDspProc, this, 0);
 #else
     Q_UNUSED(stream)
 #endif
@@ -224,14 +224,10 @@ void GaplessAudioEngine::setupDsp(HSTREAM stream)
 
 void GaplessAudioEngine::removeDsp(HSTREAM stream)
 {
-#ifdef MUSICPLAYER_HAS_BASS
-    if (stream && m_eqDsp) {
-        BASS_ChannelRemoveDSP(stream, m_eqDsp);
-        m_eqDsp = 0;
-    }
-#else
+    // BASS removes all DSPs when a channel is freed. 
+    // Manual removal is not strictly needed here since we check isEnabled in EqDspProc,
+    // and we don't have a reliable way to track multiple handles for gapless streams anyway.
     Q_UNUSED(stream)
-#endif
 }
 
 void CALLBACK GaplessAudioEngine::EqDspProc(HDSP handle, unsigned long channel, void *buffer, unsigned long length, void *user)
@@ -244,6 +240,7 @@ void CALLBACK GaplessAudioEngine::EqDspProc(HDSP handle, unsigned long channel, 
     BASS_ChannelGetInfo(channel, &info);
     engine->m_equalizer->setSampleRate(static_cast<int>(info.freq));
     engine->m_equalizer->process(
+        reinterpret_cast<void*>(channel),
         static_cast<float*>(buffer),
         static_cast<qint64>(length / sizeof(float)),
         static_cast<int>(info.chans));

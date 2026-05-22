@@ -2,6 +2,8 @@
 #define EQUALIZER_H
 
 #include <QObject>
+#include <QMap>
+#include <QMutex>
 #include <array>
 #include <vector>
 #include <cmath>
@@ -51,7 +53,8 @@ public:
     void beginBatch();
     void endBatch();
 
-    void process(float *samples, qint64 sampleCount, int channels);
+    void process(void* streamId, float *samples, qint64 sampleCount, int channels);
+    void clearStreamState(void* streamId);
 
     void resetState();
     void prepareForSeek();
@@ -65,14 +68,22 @@ signals:
     void autoLevelChanged(double dB);
 
 private:
-    static constexpr int kTransitionFrames = 512;
+    static constexpr int kTransitionFrames = 2048;
+
+    struct StreamState {
+        std::vector<std::array<BiquadState, EQ_BAND_COUNT>> chState;
+        std::vector<std::array<BiquadState, EQ_BAND_COUNT>> chStatePrev;
+        int transFramesLeft = 0;
+        int lastChannels = 0;
+    };
 
     BiquadCoeffs makeLowShelf(double freq, double gainDb, double q) const;
     BiquadCoeffs makeHighShelf(double freq, double gainDb, double q) const;
     BiquadCoeffs makePeaking(double freq, double gainDb, double q) const;
     BiquadCoeffs makeCoeffsForGain(int band, double gainDb) const;
     void updateActiveBands();
-    void ensureChannelState(int channels);
+    void updateCoefficients();
+    StreamState& getStreamState(void* streamId, int channels);
     inline float processBiquad(BiquadState &s, const BiquadCoeffs &c, float x) const;
     void recalcAutoLevel();
 
@@ -87,10 +98,11 @@ private:
     std::array<double, EQ_BAND_COUNT> m_gains{};
     std::array<double, EQ_BAND_COUNT> m_prevGains{};
     std::array<bool, EQ_BAND_COUNT> m_activeBand{};
+    std::array<BiquadCoeffs, EQ_BAND_COUNT> m_coeffs{};
+    std::array<BiquadCoeffs, EQ_BAND_COUNT> m_prevCoeffs{};
 
-    std::vector<std::array<BiquadState, EQ_BAND_COUNT>> m_chState;
-    int m_lastChannels = 0;
-    int m_transFramesLeft = 0;
+    mutable QMutex m_mutex;
+    QMap<void*, StreamState> m_states;
 
     bool m_batchMode = false;
     bool m_coeffDirty = false;
