@@ -261,66 +261,43 @@ void Equalizer::process(char *data, qint64 bytes, int channels, int bytesPerSamp
     const qint64 frames = bytes / frameSize;
     if (frames <= 0) return;
 
-    // Quick bypass: all gains flat, no transition
-    bool anyActive = false;
-    for (int i = 0; i < EQ_BAND_COUNT; ++i) {
-        if (std::abs(m_gains[i]) > 0.05) {
-            anyActive = true;
-            break;
-        }
-    }
-    if (!anyActive && m_transFramesLeft <= 0) {
-        // EQ is flat — bypass
-        return;
-    }
-
     ensureChannelState(channels);
 
     float *samples = reinterpret_cast<float *>(data);
     const double gainLinear = m_preampLinear * (m_autoLevelEnabled ? m_autoLevelLinear : 1.0);
 
-    const double transTotal = static_cast<double>(kTransitionFrames);
-
-    // Per-frame processing: interpolate gains → compute coeffs → process
-    // Interpolating gains (not coeffs) guarantees filter stability
-    double interpGains[EQ_BAND_COUNT];
+    // Pre-calculate coefficients for each active band for this block
+    BiquadCoeffs activeCoeffs[EQ_BAND_COUNT];
+    bool bandActive[EQ_BAND_COUNT];
+    for (int b = 0; b < EQ_BAND_COUNT; ++b) {
+        bandActive[b] = (std::abs(m_gains[b]) > 0.05);
+        if (bandActive[b]) {
+            activeCoeffs[b] = makeCoeffsForGain(b, m_gains[b]);
+        }
+    }
 
     for (qint64 f = 0; f < frames; ++f) {
-        const bool transitioning = (m_transFramesLeft > 0);
-
-        // Compute interpolated gains for this frame
-        if (transitioning) {
-            double t = 1.0 - (m_transFramesLeft / transTotal);
-            for (int b = 0; b < EQ_BAND_COUNT; ++b) {
-                interpGains[b] = m_prevGains[static_cast<size_t>(b)]
-                               + (m_gains[static_cast<size_t>(b)] - m_prevGains[static_cast<size_t>(b)]) * t;
-            }
-        }
-
         for (int c = 0; c < channels; ++c) {
             const size_t idx = static_cast<size_t>(f * channels + c);
             float v = samples[idx];
 
             for (int b = 0; b < EQ_BAND_COUNT; ++b) {
-                const double g = transitioning ? interpGains[b] : m_gains[static_cast<size_t>(b)];
-                if (std::abs(g) < 0.05) continue; // skip inactive bands
+                if (!bandActive[b]) continue;
 
-                const BiquadCoeffs coeff = makeCoeffsForGain(b, g);
                 v = processBiquad(
                     m_chState[static_cast<size_t>(c)][static_cast<size_t>(b)],
-                    coeff, v);
+                    activeCoeffs[b], v);
             }
 
-            v *= static_cast<float>(gainLinear);
-            samples[idx] = v;
+            samples[idx] = v * static_cast<float>(gainLinear);
         }
+    }
 
-        if (transitioning) {
-            --m_transFramesLeft;
-            if (m_transFramesLeft <= 0) {
-                m_transFramesLeft = 0;
-                m_prevGains = m_gains;
-            }
+    if (m_transFramesLeft > 0) {
+        m_transFramesLeft -= static_cast<int>(frames);
+        if (m_transFramesLeft <= 0) {
+            m_transFramesLeft = 0;
+            m_prevGains = m_gains;
         }
     }
 }

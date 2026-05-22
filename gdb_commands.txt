@@ -1,4 +1,0 @@
-run
-bt
-info threads
-quit
