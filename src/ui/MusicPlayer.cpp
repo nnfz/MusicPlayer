@@ -3445,8 +3445,6 @@ void MusicPlayer::seek(int position)
 }
 
 void MusicPlayer::updatePosition(qint64 position) {
-    qInfo() << "[ui] updatePosition: pos=" << position << "idx=" << m_currentIndex << "slider=" << m_positionSlider->value();
-    
     if (m_activeIsCue) {
         if (m_activeCueEndMs >= 0 && position >= m_activeCueEndMs) {
             m_activeCueEndMs = -1;

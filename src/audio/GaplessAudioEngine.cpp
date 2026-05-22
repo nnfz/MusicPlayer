@@ -28,36 +28,48 @@ GaplessAudioEngine::~GaplessAudioEngine()
 void GaplessAudioEngine::initBass()
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    qDebug() << "[bass] Initializing BASS...";
-    // Load plugins
+    static bool baseInitialized = false;
+    if (baseInitialized) {
+        // Just make sure mixer exists if we re-init
+        if (!m_mixer) {
+            m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP);
+            if (m_mixer) BASS_ChannelPlay(m_mixer, FALSE);
+        }
+        return;
+    }
+
+    qDebug() << "[bass] Initializing BASS system...";
+    
+    // BASS itself doesn't need PluginLoad. 
+    // Plugins like FLAC/APE/OPUS etc. should be loaded once.
+    // FX and MIX are usually linked or loaded automatically if in same dir, 
+    // but explicit load is safer IF not already loaded.
+    
     const char* plugins[] = {
-        "bassflac.dll", "bass_fx.dll", "bassape.dll", "bassalac.dll",
-        "bassopus.dll", "basswv.dll", "bassaac.dll", "basswma.dll",
-        "bassmidi.dll", "bassmix.dll", "basshls.dll"
+        "bassflac.dll", "bassape.dll", "bassalac.dll",
+        "bassopus.dll", "basswv.dll", "basswma.dll",
+        "bassmidi.dll", "basshls.dll"
     };
 
     for (const char* plugin : plugins) {
-        HPLUGIN h = BASS_PluginLoad(plugin, 0);
-        if (h) qDebug() << "[bass] Plugin loaded:" << plugin;
-        else qDebug() << "[bass] Failed to load plugin (or not found):" << plugin;
+        BASS_PluginLoad(plugin, 0);
     }
 
-    // Initialize default device
-    if (BASS_Init(-1, 44100, 0, nullptr, nullptr)) {
-        qDebug() << "[bass] Default device initialized successfully";
-    } else {
-        qWarning() << "[bass] BASS_Init failed, error code:" << BASS_ErrorGetCode();
+    // Initialize device
+    if (!BASS_Init(-1, 44100, BASS_DEVICE_LATENCY, 0, nullptr)) {
+        int err = BASS_ErrorGetCode();
+        if (err != 14) qWarning() << "[bass] BASS_Init failed:" << err;
     }
-    if (!BASS_Init(-1, 44100, BASS_DEVICE_LATENCY, 0, NULL)) {
-        qWarning() << "BASS_Init failed! Error:" << BASS_ErrorGetCode();
+
+    m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP);
+    if (m_mixer) {
+        BASS_ChannelPlay(m_mixer, FALSE);
+        qDebug() << "[bass] Mixer ready";
     } else {
-        m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP);
-        if (m_mixer) {
-            BASS_ChannelPlay(m_mixer, FALSE);
-        } else {
-            qWarning() << "BASS_Mixer_StreamCreate failed! Error:" << BASS_ErrorGetCode();
-        }
+        qWarning() << "[bass] Mixer failed:" << BASS_ErrorGetCode();
     }
+
+    baseInitialized = true;
 #endif
 }
 
@@ -257,18 +269,26 @@ void GaplessAudioEngine::setEqualizer(Equalizer *eq)
 void GaplessAudioEngine::play(const QString &filePath)
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    stop();
+    // Free only the active stream if we are not gapless
+    if (m_activeStream) {
+        BASS_Mixer_ChannelRemove(m_activeStream);
+        BASS_StreamFree(m_activeStream);
+        m_activeStream = 0;
+    }
     
     m_activeStream = createStream(filePath);
-    if (!m_activeStream || !m_mixer) return;
+    if (!m_activeStream || !m_mixer) {
+        qWarning() << "[bass] play failed for:" << filePath;
+        return;
+    }
     
     setupStream(m_activeStream);
     m_currentFilePath = filePath;
     
-    // Add to mixer
-    BASS_Mixer_StreamAddChannel(m_mixer, m_activeStream, BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN);
+    // Add to mixer with AUTOFREE so it cleans up when stopped/finished
+    BASS_Mixer_StreamAddChannel(m_mixer, m_activeStream, BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE);
     
-    // Setup End Sync. Mixtime sync is perfectly safe and required for perfect gapless when using a mixer
+    // Setup End Sync
     m_endSync = BASS_ChannelSetSync(m_activeStream, BASS_SYNC_END | BASS_SYNC_MIXTIME, 0, EndSyncProc, this);
     
     // Setup Crossfade Sync if enabled
@@ -315,7 +335,7 @@ void GaplessAudioEngine::prepareNext(const QString &filePath)
 void GaplessAudioEngine::pause()
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    if (m_mixer && BASS_ChannelIsActive(m_mixer) == BASS_ACTIVE_PLAYING) {
+    if (m_mixer) {
         BASS_ChannelPause(m_mixer);
         updateState(Paused);
     }
@@ -325,7 +345,7 @@ void GaplessAudioEngine::pause()
 void GaplessAudioEngine::resume()
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    if (m_mixer && BASS_ChannelIsActive(m_mixer) == BASS_ACTIVE_PAUSED) {
+    if (m_mixer) {
         BASS_ChannelPlay(m_mixer, FALSE);
         updateState(Playing);
     }
@@ -336,12 +356,12 @@ void GaplessAudioEngine::stop()
 {
 #ifdef MUSICPLAYER_HAS_BASS
     if (m_activeStream) {
-        if (m_mixer) BASS_Mixer_ChannelRemove(m_activeStream);
+        BASS_Mixer_ChannelRemove(m_activeStream);
         BASS_StreamFree(m_activeStream);
         m_activeStream = 0;
     }
     if (m_nextStream) {
-        if (m_mixer) BASS_Mixer_ChannelRemove(m_nextStream);
+        BASS_Mixer_ChannelRemove(m_nextStream);
         BASS_StreamFree(m_nextStream);
         m_nextStream = 0;
     }
@@ -360,9 +380,10 @@ void GaplessAudioEngine::seek(qint64 positionMs)
 #ifdef MUSICPLAYER_HAS_BASS
     if (m_activeStream && m_mixer) {
         qint64 posBytes = BASS_ChannelSeconds2Bytes(m_activeStream, positionMs / 1000.0);
-        BASS_Mixer_ChannelSetPosition(m_activeStream, posBytes, BASS_POS_BYTE);
         
-        // Reset equalizer state for clean seek if custom equalizer exists
+        // Use BASS_POS_MIXER_RESET to ensure the mixer clears its buffer for this channel
+        BASS_Mixer_ChannelSetPosition(m_activeStream, posBytes, BASS_POS_BYTE | BASS_POS_MIXER_RESET);
+        
         if (m_equalizer) m_equalizer->prepareForSeek();
     }
 #else
@@ -373,7 +394,12 @@ void GaplessAudioEngine::seek(qint64 positionMs)
 void GaplessAudioEngine::setVolume(float vol)
 {
     m_volume = qBound(0.0f, vol, 1.0f);
-    applyVolume(m_activeStream);
+    // Apply volume to the MIXER, not individual streams, for consistent behavior
+#ifdef MUSICPLAYER_HAS_BASS
+    if (m_mixer) {
+        BASS_ChannelSetAttribute(m_mixer, BASS_ATTRIB_VOL, m_volume);
+    }
+#endif
 }
 
 void GaplessAudioEngine::setPlaybackRate(float rate)
