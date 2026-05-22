@@ -131,6 +131,7 @@ private:
     struct FxState {
         HFX eq = 0;
         HFX vol = 0;
+        HFX reverb = 0;
     };
     QMap<HSTREAM, FxState> m_streamFx;
     

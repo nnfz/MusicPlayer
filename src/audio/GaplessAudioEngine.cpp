@@ -201,9 +201,33 @@ void GaplessAudioEngine::applyPlaybackRate(HSTREAM stream)
 {
 #ifdef MUSICPLAYER_HAS_BASS
     if (stream) {
-        float tempoPerc = (m_playbackRate - 1.0f) * 100.0f;
-        BASS_ChannelSetAttribute(stream, BASS_ATTRIB_TEMPO_FREQ, tempoPerc);
-        BASS_ChannelSetAttribute(stream, BASS_ATTRIB_TEMPO, tempoPerc);
+        // BASS_ATTRIB_TEMPO_FREQ expects absolute frequency in Hz.
+        // We assume 44100 as base since our mixer and streams are created with it.
+        float freq = 44100.0f * m_playbackRate;
+        BASS_ChannelSetAttribute(stream, BASS_ATTRIB_TEMPO_FREQ, freq);
+        
+        // Disable tempo (time-stretching) to achieve the "tape-style" resampled sound
+        BASS_ChannelSetAttribute(stream, BASS_ATTRIB_TEMPO, 0); 
+        
+        // Add Reverb if slowed down (Slowed + Reverb vibe)
+        FxState &fx = m_streamFx[stream];
+        if (m_playbackRate < 0.95f) {
+            if (!fx.reverb) fx.reverb = BASS_ChannelSetFX(stream, BASS_FX_BFX_FREEVERB, 2);
+            if (fx.reverb) {
+                BASS_BFX_FREEVERB rv;
+                rv.fDryMix = 0.9f;
+                rv.fWetMix = (1.0f - m_playbackRate) * 0.4f;
+                rv.fRoomSize = 0.75f;
+                rv.fDamp = 0.4f;
+                rv.fWidth = 1.0f;
+                rv.lMode = 0;
+                rv.lChannel = BASS_BFX_CHANALL;
+                BASS_FXSetParameters(fx.reverb, &rv);
+            }
+        } else if (fx.reverb) {
+            BASS_ChannelRemoveFX(stream, fx.reverb);
+            fx.reverb = 0;
+        }
     }
 #else
     Q_UNUSED(stream)
