@@ -1343,6 +1343,13 @@ void FullscreenPlayer::updateLyricsHighlight(int ms)
 
     const int prevIndex = m_lyricsCurrentIndex;
     m_lyricsCurrentIndex = idx;
+
+    QString currentText = (idx >= 0 && idx < m_lyricsList->count()) ? m_lyricsList->item(idx)->text() : "N/A";
+    int lyricTimeMs = (idx >= 0 && idx < m_lyricsSyncedTimes.size()) ? m_lyricsSyncedTimes[idx] : 0;
+    qDebug() << "[SYNC DEBUG] Text:" << currentText 
+             << "| Text time(sec):" << (lyricTimeMs / 1000) 
+             << "| Playback time(sec):" << (ms / 1000);
+
     startLyricsHighlightAnimation(prevIndex, m_lyricsCurrentIndex);
 
     const bool suspended = lyricsAutoScrollSuspended();
@@ -1591,12 +1598,23 @@ int FullscreenPlayer::lyricsScrollTargetForIndex(int index) const
     QListWidgetItem *item = m_lyricsList->item(index);
     if (!item) return -1;
 
-    // NOTE: doItemsLayout() was previously called here on every lyric line
-    // activation. It is O(N) and was the main cause of visible scroll lag.
-    // Layout is now warmed exactly once in rebuildLyricsList() and refreshed
-    // when the lyrics panel finishes resizing, so the cached visualItemRect
-    // here is reliable.
+    auto *bar = m_lyricsList->verticalScrollBar();
+    int currentBarVal = bar ? bar->value() : 0;
+
     QRect rect = m_lyricsList->visualItemRect(item);
+    if (!rect.isValid() && bar) {
+        // If the item is off-screen, visualItemRect returns an empty rect.
+        // We can temporarily scroll to it instantly to force layout visibility, 
+        // read the rect, and then instantly restore the scrollbar.
+        // Since this happens synchronously before the next paint event,
+        // it causes no visual flicker.
+        const bool wasBlocked = bar->blockSignals(true);
+        m_lyricsList->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+        rect = m_lyricsList->visualItemRect(item);
+        bar->setValue(currentBarVal);
+        bar->blockSignals(wasBlocked);
+    }
+
     if (!rect.isValid()) return -1;
 
     int extraTop = (index == 0) ? qMax(0, m_lyricsList->viewport()->height() / 2 - 20) : 0;
@@ -1606,11 +1624,10 @@ int FullscreenPlayer::lyricsScrollTargetForIndex(int index) const
     contentRect.setTop(contentRect.top() + extraTop);
     contentRect.setBottom(contentRect.bottom() - extraBottom);
 
-    auto *bar = m_lyricsList->verticalScrollBar();
-    int absoluteCenterY = bar->value() + contentRect.center().y();
+    int absoluteCenterY = (bar ? bar->value() : 0) + contentRect.center().y();
     int target = absoluteCenterY - m_lyricsList->viewport()->height() / 2;
 
-    return qBound(bar->minimum(), target, bar->maximum());
+    return bar ? qBound(bar->minimum(), target, bar->maximum()) : target;
 }
 
 QPoint FullscreenPlayer::cardPosForWidth(int cardWidth) const

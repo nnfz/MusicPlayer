@@ -580,14 +580,7 @@ void SettingsDialog::buildPlaybackPage()
 void SettingsDialog::updateFormatLabel()
 {
     if (!m_formatInfoLabel) return;
-    if (m_engine) {
-        const QAudioFormat f = m_engine->outputFormat();
-        m_formatInfoLabel->setText(QStringLiteral("%1 Hz / Float32 / %2 ch")
-            .arg(f.sampleRate())
-            .arg(f.channelCount()));
-    } else {
-        m_formatInfoLabel->setText(QStringLiteral("44100 Hz / Float32 / 2 ch"));
-    }
+    m_formatInfoLabel->setText(QStringLiteral("BASS Engine: 44100 Hz / Float32 / 2 ch"));
 }
 
 void SettingsDialog::updateBackendStatusLabel()

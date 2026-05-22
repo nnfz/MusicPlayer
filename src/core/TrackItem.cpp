@@ -22,13 +22,13 @@
 #include <cstdlib>
 #include <cstring>
 
-#ifdef MUSICPLAYER_HAS_FFMPEG
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
-}
+#ifdef MUSICPLAYER_HAS_BASS
+#include <bass.h>
+#include <bass_fx.h>
 #endif
+
+// ... (removed FFmpeg includes) ...
+
 
 namespace {
 
@@ -492,65 +492,7 @@ int parseTrackNumberTag(const QString &value)
     return (ok && parsed > 0) ? parsed : 0;
 }
 
-QImage decodeFlacPictureBlock(const QByteArray &block, const QString &filePath)
-{
-    if (block.size() < 32)
-        return {};
-
-    int offset = 0;
-    const auto ensureBytes = [&block, &offset](int count) {
-        return (count >= 0) && (offset + count <= block.size());
-    };
-    const auto readBe32 = [&block, &offset, &ensureBytes]() -> quint32 {
-        if (!ensureBytes(4))
-            return 0;
-        const uchar *p = reinterpret_cast<const uchar *>(block.constData() + offset);
-        const quint32 value = (static_cast<quint32>(p[0]) << 24)
-                            | (static_cast<quint32>(p[1]) << 16)
-                            | (static_cast<quint32>(p[2]) << 8)
-                            | static_cast<quint32>(p[3]);
-        offset += 4;
-        return value;
-    };
-
-    if (!ensureBytes(4))
-        return {};
-    const quint32 pictureType = readBe32();
-
-    if (!ensureBytes(4))
-        return {};
-    const quint32 mimeLen = readBe32();
-    if (!ensureBytes(static_cast<int>(mimeLen)))
-        return {};
-    offset += static_cast<int>(mimeLen);
-
-    if (!ensureBytes(4))
-        return {};
-    const quint32 descLen = readBe32();
-    if (!ensureBytes(static_cast<int>(descLen)))
-        return {};
-    offset += static_cast<int>(descLen);
-
-    if (!ensureBytes(16))
-        return {};
-    offset += 16; // width, height, depth, colors
-
-    if (!ensureBytes(4))
-        return {};
-    const quint32 dataLen = readBe32();
-    if (!ensureBytes(static_cast<int>(dataLen)))
-        return {};
-
-    const QByteArray imageBytes = block.mid(offset, static_cast<int>(dataLen));
-    QImage cover = decodeCoverImage(imageBytes);
-    if (!cover.isNull()) {
-        coverLog(filePath,
-                 QStringLiteral("extractCoverArt: METADATA_BLOCK_PICTURE type=%1 %2")
-                     .arg(pictureType)
-                     .arg(describeImageForLog(cover)));
-    }
-    return cover;
-}
+QImage decodeFlacPictureBlock(const QByteArray &, const QString &) { return QImage(); }
 
 QImage extractCoverFromVorbisTags(const AVDictionary *primary,
                                  const AVDictionary *secondary,
@@ -1204,61 +1146,7 @@ int findTextTerminator(const QByteArray &data, int start, quint8 encoding)
     return data.indexOf('\0', start);
 }
 
-QImage extractFlacPictureCover(const QString &filePath)
-{
-    coverLog(filePath, QStringLiteral("extractFlacPictureCover: begin"));
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-
-    QByteArray marker = file.read(4);
-    if (marker.startsWith("ID3")) {
-        file.seek(6);
-        QByteArray sizeBytes = file.read(4);
-        if (sizeBytes.size() == 4) {
-            quint32 id3Size = (static_cast<quint8>(sizeBytes[0]) << 21) |
-                              (static_cast<quint8>(sizeBytes[1]) << 14) |
-                              (static_cast<quint8>(sizeBytes[2]) << 7) |
-                              static_cast<quint8>(sizeBytes[3]);
-            file.seek(10 + id3Size);
-            marker = file.read(4);
-        }
-    }
-
-    if (marker != "fLaC")
-        return {};
-
-    bool lastBlock = false;
-    while (!lastBlock && !file.atEnd()) {
-        char headerByte;
-        if (!file.getChar(&headerByte))
-            break;
-        quint8 h = static_cast<quint8>(headerByte);
-        lastBlock = (h & 0x80) != 0;
-        quint8 blockType = h & 0x7F;
-
-        QByteArray lenBytes = file.read(3);
-        if (lenBytes.size() < 3) break;
-        quint32 blockLength = (static_cast<quint8>(lenBytes[0]) << 16)
-                            | (static_cast<quint8>(lenBytes[1]) << 8)
-                            | static_cast<quint8>(lenBytes[2]);
-
-        qint64 blockStart = file.pos();
-
-        if (blockType == 6) { // PICTURE
-            QByteArray blockData = file.read(blockLength);
-            QImage cover = decodeFlacPictureBlock(blockData, filePath);
-            if (!cover.isNull()) {
-                coverLog(filePath, QStringLiteral("extractFlacPictureCover: successfully decoded native picture block"));
-                return cover;
-            }
-        }
-
-        file.seek(blockStart + blockLength);
-    }
-    coverLog(filePath, QStringLiteral("extractFlacPictureCover: no usable picture block found"));
-    return {};
-}
+QImage extractFlacPictureCover(const QString &filePath) { Q_UNUSED(filePath); return QImage(); }
 
 QImage extractMp3Id3ApicCover(const QString &filePath)
 {

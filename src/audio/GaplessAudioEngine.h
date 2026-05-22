@@ -2,35 +2,22 @@
 #define GAPLESSAUDIOENGINE_H
 
 #include <QObject>
-#include <QIODevice>
-#include <QAudioFormat>
-#include <QAudioBuffer>
-#include <QByteArray>
-#include <QMutex>
+#include <QString>
 #include <QTimer>
-#include <QElapsedTimer>
-#include <QPair>
 #include <QVector>
-#include <memory>
+#include <QPair>
 
-#include "AudioDecoderBackend.h"
-#include "AudioOutputBackend.h"
+#include "Equalizer.h"
 
-class Equalizer;
-
-class AudioBuffer
-{
-public:
-    void write(const char *data, qint64 len);
-    qint64 read(char *data, qint64 maxLen);
-    qint64 size() const;
-    void clear();
-    void swap(AudioBuffer &other);
-private:
-    QByteArray m_buf;
-    qint64 m_readPos = 0;
-    mutable QMutex m_mutex;
-};
+#ifdef MUSICPLAYER_HAS_BASS
+#include <bass.h>
+#include <bass_fx.h>
+#include <bassflac.h>
+#else
+typedef unsigned long HSTREAM;
+typedef unsigned long HDSP;
+typedef unsigned long HSYNC;
+#endif
 
 class GaplessAudioEngine : public QObject
 {
@@ -52,39 +39,38 @@ public:
     float playbackRate() const { return m_playbackRate; }
     void setCrossfadeDurationMs(int durationMs);
     int crossfadeDurationMs() const { return m_crossfadeDurationMs; }
-    void setEqualizer(Equalizer *eq) { m_equalizer = eq; }
+    void setEqualizer(Equalizer *eq);
 
-    static QString backendQtId();
-    static QString backendWasapiSharedId();
-    static QString backendWasapiExclusiveId();
-    static QString backendWasapiCustomId();
-    void setBackendPreferenceId(const QString &backendId);
-    QString backendPreferenceId() const { return m_backendPreferenceId; }
-    QString activeBackendId() const { return m_activeBackendId; }
-    QString activeBackendDisplayName() const;
+    // Stubs for API compatibility
+    static QString backendQtId() { return "bass"; }
+    static QString backendWasapiSharedId() { return "bass"; }
+    static QString backendWasapiExclusiveId() { return "bass"; }
+    static QString backendWasapiCustomId() { return "bass"; }
+    void setBackendPreferenceId(const QString &) {}
+    QString backendPreferenceId() const { return "bass"; }
+    QString activeBackendId() const { return "bass"; }
+    QString activeBackendDisplayName() const { return "BASS Engine"; }
 
-    static QString decoderQtId();
-    static QString decoderFfmpegId();
-    void setDecoderPreferenceId(const QString &decoderId);
-    QString decoderPreferenceId() const { return m_decoderPreferenceId; }
-    QString activeDecoderId() const { return m_activeDecoderId; }
-    QString activeDecoderDisplayName() const;
+    static QString decoderQtId() { return "bass"; }
+    static QString decoderFfmpegId() { return "bass"; }
+    void setDecoderPreferenceId(const QString &) {}
+    QString decoderPreferenceId() const { return "bass"; }
+    QString activeDecoderId() const { return "bass"; }
+    QString activeDecoderDisplayName() const { return "BASS Decoder"; }
 
     void setOutputDevicePreferenceId(const QString &deviceId);
     QString outputDevicePreferenceId() const { return m_outputDevicePreferenceId; }
     QString activeOutputDeviceId() const { return m_activeOutputDeviceId; }
-    QString activeOutputDeviceName() const { return m_activeOutputDeviceName; }
-    bool canSelectOutputDevice() const;
+    QString activeOutputDeviceName() const;
+    bool canSelectOutputDevice() const { return true; }
     QVector<QPair<QString, QString>> availableOutputDevices() const;
 
     void prepareNext(const QString &filePath);
 
     State state() const { return m_state; }
     qint64 position() const;
-    qint64 duration() const { return m_duration; }
+    qint64 duration() const;
     QString currentFilePath() const { return m_currentFilePath; }
-
-    QAudioFormat outputFormat() const { return m_format; }
 
 signals:
     void positionChanged(qint64 positionMs);
@@ -97,118 +83,50 @@ signals:
     void outputDeviceChanged();
     void playbackRateChanged(float rate);
     void currentAudioLevel(float level);
-    void bassLevel(float level);
+    void bassLevel(float level); // Assuming this meant low-frequency for visualizer, we can simulate it
 
 private slots:
-    void onDecoderBufferReady(const QAudioBuffer &buffer);
-    void onDecoderStateChanged(AudioDecoderBackend::State state);
-    void onDecoderEndOfStream();
-    void onDecoderDurationChanged(qint64 durationMs);
-    void onNextDecoderBufferReady(const QAudioBuffer &buffer);
-    void onNextDecoderEndOfStream();
-    void onNextDecoderDurationChanged(qint64 durationMs);
     void onPositionTick();
+    void processPendingTransitions();
 
 private:
-    AudioDecoderBackend *createDecoderBackend();
-    void ensureSinkRunning();
-    void destroyOutput();
-    void rebuildOutputBackend();
-    void rebuildDecoderBackend();
-    void clearPreparedNext();
-    void beginPrepareNextDecoder();
-    void promotePreparedNextDecoder();
-    QString normalizeDecoderId(const QString &decoderId) const;
-    void connectDecoderSignals();
-    void applyOutputFade(char *data, qint64 bytes);
-    bool attemptSeekBackoffRecovery(const char *reason);
-    void feedSink();
-    void resetStreamState();
+    void initBass();
+    void freeBass();
+    bool selectBassDevice(int deviceIndex);
+    HSTREAM createStream(const QString &filePath);
+    void setupStream(HSTREAM stream);
+    void applyVolume(HSTREAM stream);
+    void applyPlaybackRate(HSTREAM stream);
+    void setupDsp(HSTREAM stream);
+    void removeDsp(HSTREAM stream);
     void updateState(State newState);
-    bool formatsMatch(const QAudioFormat &a, const QAudioFormat &b) const;
-    QString normalizeBackendId(const QString &backendId) const;
-    void syncActiveOutputDeviceInfo();
-    void markAudibleTransition(const QString &fromPath, const QString &toPath, qint64 fromDuration, const char *reason);
-    void updateAudibleTransitionTrace();
-    void finalizePendingTrackTransition();
 
-    QAudioFormat m_format;
-    std::unique_ptr<AudioOutputBackend> m_output;
+    static void CALLBACK EndSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
+    static void CALLBACK CrossfadeSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
+    static void CALLBACK EqDspProc(HDSP handle, unsigned long channel, void *buffer, unsigned long length, void *user);
 
-    AudioDecoderBackend *m_decoder = nullptr;
-    AudioDecoderBackend *m_nextDecoder = nullptr;
+    int getBassDeviceIndex(const QString &deviceId) const;
 
-    AudioBuffer m_currentBuf;
-    AudioBuffer m_nextBuf;
-    QByteArray m_pendingPcm;
-    QByteArray m_chunkScratch;
-
-    QString m_currentFilePath;
-    QString m_nextFilePath;
-
-    qint64 m_duration = 0;
-    qint64 m_decoderPositionBaseMs = 0;
+    State m_state = Stopped;
     float m_volume = 0.7f;
     float m_playbackRate = 1.0f;
     int m_crossfadeDurationMs = 3000;
-
-    bool m_sourceEnded = false;
-    bool m_nextSourceEnded = false;
-    bool m_playbackFinishedEmitted = false;
-    bool m_needEqPrebuffer = true;
-    bool m_sinkEqMode = false;
-    bool m_waitingForNextBuffer = false;
-    bool m_crossfadeActive = false;
-    bool m_crossfadePendingPromotion = false;
-    int m_outputFadeFramesRemaining = 0;
-    qint64 m_crossfadeFramesTotal = 0;
-    qint64 m_crossfadeFramesDone = 0;
-    qint64 m_nextDuration = 0;
+    QString m_currentFilePath;
     QString m_preparedNextPath;
-    QElapsedTimer m_nextBufferWaitTimer;
-    QByteArray m_crossfadeScratch;
-
-    QString m_backendPreferenceId = QStringLiteral("wasapi-shared");
-    QString m_activeBackendId = QStringLiteral("wasapi-shared");
-    QString m_decoderPreferenceId = QStringLiteral("ffmpeg-decoder");
-    QString m_activeDecoderId = QStringLiteral("ffmpeg-decoder");
     QString m_outputDevicePreferenceId;
     QString m_activeOutputDeviceId;
-    QString m_activeOutputDeviceName = QStringLiteral("System Default");
+    QString m_activeOutputDeviceName;
 
-    quint64 m_seekTraceId = 0;
-    qint64 m_seekTraceTargetMs = -1;
-    qint64 m_seekTraceDecoderPositionBaseMs = 0;
-    bool m_seekTraceWaitingForFirstBuffer = false;
-    bool m_seekTraceWaitingForFirstWrite = false;
-    bool m_seekTraceWarnedNoWrite = false;
-    bool m_seekTraceRecoveryAttempted = false;
-    bool m_seekTraceReopenAttempted = false;
-    bool m_seekTraceWrongStartRecoveryAttempted = false;
-    int m_seekTraceBackoffAttempts = 0;
-    int m_seekTraceImmediateEosCount = 0;
-    QElapsedTimer m_seekTraceTimer;
-
-    bool m_audibleTransitionPending = false;
-    qint64 m_audibleTransitionMarkedAtMs = 0;
-    qint64 m_audibleTransitionEstimatedDelayMs = 0;
-    qint64 m_audibleTransitionFromDurationMs = 0;
-    QString m_audibleTransitionFromPath;
-    QString m_audibleTransitionToPath;
-
-    // For gapless transition: track pre-buffered audio position
-    bool m_inGaplessTransition = false;
-    qint64 m_gaplessTailBytes = -1;
-    qint64 m_gaplessTailPrev = -1;
-    bool m_pendingTrackTransitioned = false;
-    qint64 m_pendingNextDuration = 0;
-    qint64 m_gaplessTransitionInitialBufMs = 0;
-    qint64 m_gaplessTransitionDecoderOffsetMs = 0;
-
-    State m_state = Stopped;
-    QTimer *m_positionTimer = nullptr;
-    QTimer *m_feedTimer = nullptr;
     Equalizer *m_equalizer = nullptr;
+    QTimer *m_positionTimer = nullptr;
+
+    HSTREAM m_activeStream = 0;
+    HSTREAM m_nextStream = 0;
+    HSYNC m_endSync = 0;
+    HSYNC m_crossfadeSync = 0;
+    HDSP m_eqDsp = 0;
+    
+    bool m_transitionPending = false;
 };
 
 #endif // GAPLESSAUDIOENGINE_H

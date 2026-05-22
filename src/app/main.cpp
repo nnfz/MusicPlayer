@@ -1,6 +1,14 @@
 #include "MusicPlayer.h"
 #include <QApplication>
 
+#ifdef Q_OS_WIN
+#include <stdlib.h>
+extern "C" {
+    int *__imp___argc = &__argc;
+    char ***__imp___argv = &__argv;
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
