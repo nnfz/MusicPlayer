@@ -33,6 +33,13 @@ SOURCES += \
 win32 {
     LIBS += -lole32 -luuid -lavrt -lshell32 -lcomctl32 -lmingw32
 
+    FFMPEG_DIR = $$PWD/third_party/ffmpeg
+    exists($$FFMPEG_DIR/include/libavformat/avformat.h) {
+        DEFINES += MUSICPLAYER_HAS_FFMPEG
+        INCLUDEPATH += $$FFMPEG_DIR/include
+        LIBS += -L$$FFMPEG_DIR/lib -lavformat -lavcodec -lavutil -lswscale -lswresample
+    }
+
     BASS_DIR = $$PWD/third_party/bass
     exists($$BASS_DIR/include/bass.h) {
         DEFINES += MUSICPLAYER_HAS_BASS
