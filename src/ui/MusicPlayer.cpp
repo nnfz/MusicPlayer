@@ -135,9 +135,9 @@ MusicPlayer::MusicPlayer(QWidget *parent)
             qBound(0.5, s.value("Playback/playbackRate", 1.0).toDouble(), 2.0)));
         m_engine->setCrossfadeDurationMs(
             qBound(0, s.value("Playback/crossfadeSeconds", 3).toInt(), 8) * 1000);
+        m_equalizer->setPreamp(s.value("Equalizer/preamp", 0.0).toDouble());
         m_equalizer->setAutoLevelEnabled(s.value("Equalizer/autoLevel", false).toBool());
         m_equalizer->setEnabled(s.value("Equalizer/enabled", true).toBool());
-        m_equalizer->setPreamp(s.value("Equalizer/preamp", 0.0).toDouble());
         m_shuffleMode = qBound(0,
                        s.value("Playback/shuffleMode", static_cast<int>(ShuffleHistory)).toInt(),
                        1);

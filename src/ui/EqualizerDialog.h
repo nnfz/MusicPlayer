@@ -27,6 +27,7 @@ private:
     QSlider *m_preampSlider;
     QLabel *m_preampValueLabel;
     QCheckBox *m_enableCheck;
+    QCheckBox *m_autoLevelCheck;
     QComboBox *m_presetCombo;
 };
 

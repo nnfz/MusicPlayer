@@ -30,7 +30,7 @@ void CALLBACK GaplessAudioEngine::AudioEndSyncProc(HSYNC handle, unsigned long c
     GaplessAudioEngine *engine = static_cast<GaplessAudioEngine*>(user);
     if (!engine || !engine->m_nextStream || engine->m_crossfadeDurationMs > 0) return;
     BASS_Mixer_StreamAddChannel(engine->m_mixer, engine->m_nextStream,
-        BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE);
+        BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE | BASS_MIXER_CHAN_BUFFER);
     QMetaObject::invokeMethod(engine, "processPendingTransitions", Qt::QueuedConnection);
 #endif
 }
@@ -59,7 +59,7 @@ void GaplessAudioEngine::initBass()
     static bool baseInitialized = false;
     if (baseInitialized) {
         if (!m_mixer) {
-            m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP);
+            m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP | BASS_SAMPLE_FLOAT);
             if (m_mixer) BASS_ChannelPlay(m_mixer, FALSE);
         }
         return;
@@ -80,12 +80,10 @@ void GaplessAudioEngine::initBass()
         if (err != 14) qWarning() << "[bass] BASS_Init failed:" << err;
     }
 
-    m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP);
+    m_mixer = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP | BASS_SAMPLE_FLOAT);
     if (m_mixer) {
         BASS_ChannelPlay(m_mixer, FALSE);
         qDebug() << "[bass] Mixer ready";
-    } else {
-        qWarning() << "[bass] Mixer failed:" << BASS_ErrorGetCode();
     }
 
     baseInitialized = true;
@@ -188,7 +186,7 @@ void GaplessAudioEngine::setupStream(HSTREAM stream)
 #ifdef MUSICPLAYER_HAS_BASS
     if (!stream) return;
     applyPlaybackRate(stream);
-    setupDsp(stream);
+    setupEq(stream);
 #else
     Q_UNUSED(stream)
 #endif
@@ -212,55 +210,68 @@ void GaplessAudioEngine::applyPlaybackRate(HSTREAM stream)
 #endif
 }
 
-void GaplessAudioEngine::setupDsp(HSTREAM stream)
+void GaplessAudioEngine::setupEq(HSTREAM stream)
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    if (stream && m_equalizer)
-        BASS_ChannelSetDSP(stream, EqDspProc, this, 0);
+    if (!stream || !m_equalizer) return;
+    HFX hEq = BASS_ChannelSetFX(stream, BASS_FX_BFX_PEAKEQ, 0);
+    HFX hVol = BASS_ChannelSetFX(stream, BASS_FX_BFX_VOLUME, 1);
+    if (hEq && hVol) {
+        m_streamFx[stream] = {hEq, hVol};
+        updateEq(stream);
+    }
 #else
     Q_UNUSED(stream)
 #endif
 }
 
-void GaplessAudioEngine::removeDsp(HSTREAM stream)
+void GaplessAudioEngine::updateEq(HSTREAM stream)
 {
-    // BASS removes all DSPs when a channel is freed. 
-    // Manual removal is not strictly needed here since we check isEnabled in EqDspProc,
-    // and we don't have a reliable way to track multiple handles for gapless streams anyway.
+#ifdef MUSICPLAYER_HAS_BASS
+    if (!stream || !m_equalizer) return;
+    FxState fx = m_streamFx.value(stream);
+    if (!fx.eq || !fx.vol) return;
+
+    BASS_BFX_PEAKEQ p;
+    p.fBandwidth = 1.0f; 
+    p.fQ = 0.0f;
+    p.lChannel = BASS_BFX_CHANALL;
+
+    for (int i = 0; i < EQ_BAND_COUNT; ++i) {
+        p.lBand = i;
+        p.fCenter = static_cast<float>(EQ_FREQUENCIES[i]);
+        p.fGain = m_equalizer->isEnabled() ? static_cast<float>(m_equalizer->bandGain(i)) : 0.0f;
+        BASS_FXSetParameters(fx.eq, &p);
+    }
+
+    float totalGainDb = m_equalizer->isEnabled() ? (m_equalizer->preamp() + m_equalizer->autoLevelDb()) : 0.0f;
+    float linearGain = std::pow(10.0f, totalGainDb / 20.0f);
+    
+    BASS_BFX_VOLUME v;
+    v.lChannel = BASS_BFX_CHANALL;
+    v.fVolume = linearGain;
+    BASS_FXSetParameters(fx.vol, &v);
+#else
     Q_UNUSED(stream)
+#endif
 }
 
-void CALLBACK GaplessAudioEngine::EqDspProc(HDSP handle, unsigned long channel, void *buffer, unsigned long length, void *user)
+void GaplessAudioEngine::applyEqToAll()
 {
-    Q_UNUSED(handle)
 #ifdef MUSICPLAYER_HAS_BASS
-    GaplessAudioEngine *engine = static_cast<GaplessAudioEngine*>(user);
-    if (!engine || !engine->m_equalizer || !engine->m_equalizer->isEnabled()) return;
-    BASS_CHANNELINFO info;
-    BASS_ChannelGetInfo(channel, &info);
-    engine->m_equalizer->setSampleRate(static_cast<int>(info.freq));
-    engine->m_equalizer->process(
-        reinterpret_cast<void*>(channel),
-        static_cast<float*>(buffer),
-        static_cast<qint64>(length / sizeof(float)),
-        static_cast<int>(info.chans));
-#else
-    Q_UNUSED(channel)
-    Q_UNUSED(buffer)
-    Q_UNUSED(length)
-    Q_UNUSED(user)
+    if (m_activeStream) updateEq(m_activeStream);
+    if (m_nextStream) updateEq(m_nextStream);
 #endif
 }
 
 void GaplessAudioEngine::setEqualizer(Equalizer *eq)
 {
+    if (m_equalizer) disconnect(m_equalizer, nullptr, this, nullptr);
     m_equalizer = eq;
-#ifdef MUSICPLAYER_HAS_BASS
-    if (m_activeStream) {
-        removeDsp(m_activeStream);
-        setupDsp(m_activeStream);
+    if (m_equalizer) {
+        connect(m_equalizer, &Equalizer::bandsChanged, this, &GaplessAudioEngine::applyEqToAll);
+        applyEqToAll();
     }
-#endif
 }
 
 void GaplessAudioEngine::updateState(State newState)
@@ -279,20 +290,22 @@ void GaplessAudioEngine::updateState(State newState)
 void GaplessAudioEngine::play(const QString &filePath)
 {
 #ifdef MUSICPLAYER_HAS_BASS
-    qDebug() << "[bass] play() requested for:" << filePath;
-
     if (m_mixer) {
         HSTREAM sources[32];
         int count = BASS_Mixer_StreamGetChannels(m_mixer, sources, 32);
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < count; i++) {
+            m_streamFx.remove(sources[i]);
             BASS_Mixer_ChannelRemove(sources[i]);
+        }
     }
 
     if (m_activeStream) {
+        m_streamFx.remove(m_activeStream);
         BASS_StreamFree(m_activeStream);
         m_activeStream = 0;
     }
     if (m_nextStream) {
+        m_streamFx.remove(m_nextStream);
         BASS_StreamFree(m_nextStream);
         m_nextStream = 0;
     }
@@ -302,27 +315,19 @@ void GaplessAudioEngine::play(const QString &filePath)
     m_transitionPending = false;
 
     m_activeStream = createStream(filePath);
-    if (!m_activeStream) {
-        qWarning() << "[bass] play failed for:" << filePath;
-        return;
-    }
-
-    if (!m_mixer) {
-        initBass();
-        if (!m_mixer) return;
-    }
+    if (!m_activeStream) return;
 
     setupStream(m_activeStream);
     m_currentFilePath = filePath;
 
     if (!BASS_Mixer_StreamAddChannel(m_mixer, m_activeStream,
-            BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE)) {
-        qWarning() << "[bass] Mixer AddChannel failed:" << BASS_ErrorGetCode();
+            BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE | BASS_MIXER_CHAN_BUFFER)) {
         BASS_StreamFree(m_activeStream);
         m_activeStream = 0;
         return;
     }
 
+    BASS_ChannelSetAttribute(m_activeStream, BASS_ATTRIB_VOL, 1.0f);
     BASS_Mixer_ChannelSetPosition(m_activeStream, 0, BASS_POS_BYTE | BASS_POS_MIXER_RESET);
 
     m_endSync = BASS_ChannelSetSync(m_activeStream,
@@ -340,7 +345,6 @@ void GaplessAudioEngine::play(const QString &filePath)
     }
 
     BASS_ChannelPlay(m_mixer, FALSE);
-
     updateState(Playing);
     emit durationChanged(duration());
 #else
@@ -353,6 +357,7 @@ void GaplessAudioEngine::prepareNext(const QString &filePath)
     m_preparedNextPath = filePath;
 #ifdef MUSICPLAYER_HAS_BASS
     if (m_nextStream) {
+        m_streamFx.remove(m_nextStream);
         BASS_StreamFree(m_nextStream);
         m_nextStream = 0;
     }
@@ -393,20 +398,15 @@ void GaplessAudioEngine::stop()
     if (m_mixer) {
         HSTREAM sources[32];
         int count = BASS_Mixer_StreamGetChannels(m_mixer, sources, 32);
-        for (int i = 0; i < count; i++)
-            BASS_Mixer_ChannelRemove(sources[i]);
+        for (int i = 0; i < count; i++) BASS_Mixer_ChannelRemove(sources[i]);
     }
-    if (m_activeStream) {
-        BASS_StreamFree(m_activeStream);
-        m_activeStream = 0;
-    }
-    if (m_nextStream) {
-        BASS_StreamFree(m_nextStream);
-        m_nextStream = 0;
-    }
+    if (m_activeStream) BASS_StreamFree(m_activeStream);
+    if (m_nextStream) BASS_StreamFree(m_nextStream);
+    m_activeStream = 0;
+    m_nextStream = 0;
+    m_streamFx.clear();
     m_endSync = 0;
     m_crossfadeSync = 0;
-    m_eqDsp = 0;
     m_currentFilePath.clear();
     m_preparedNextPath.clear();
 #endif
@@ -420,7 +420,6 @@ void GaplessAudioEngine::seek(qint64 positionMs)
     if (m_activeStream && m_mixer) {
         qint64 posBytes = BASS_ChannelSeconds2Bytes(m_activeStream, positionMs / 1000.0);
         BASS_Mixer_ChannelSetPosition(m_activeStream, posBytes, BASS_POS_BYTE | BASS_POS_MIXER_RESET);
-        if (m_equalizer) m_equalizer->prepareForSeek();
     }
 #else
     Q_UNUSED(positionMs)
@@ -511,12 +510,14 @@ void CALLBACK GaplessAudioEngine::CrossfadeSyncProc(HSYNC handle, unsigned long 
 #ifdef MUSICPLAYER_HAS_BASS
     GaplessAudioEngine *engine = static_cast<GaplessAudioEngine*>(user);
     if (!engine || !engine->m_nextStream) return;
+    
     BASS_Mixer_StreamAddChannel(engine->m_mixer, engine->m_nextStream,
-        BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE);
+        BASS_MIXER_DOWNMIX | BASS_MIXER_NORAMPIN | BASS_STREAM_AUTOFREE | BASS_MIXER_CHAN_BUFFER);
+    
     BASS_ChannelSlideAttribute(channel, BASS_ATTRIB_VOL, 0.0f, engine->m_crossfadeDurationMs);
     BASS_ChannelSetAttribute(engine->m_nextStream, BASS_ATTRIB_VOL, 0.0f);
-    BASS_ChannelSlideAttribute(engine->m_nextStream, BASS_ATTRIB_VOL,
-        engine->m_volume, engine->m_crossfadeDurationMs);
+    BASS_ChannelSlideAttribute(engine->m_nextStream, BASS_ATTRIB_VOL, 1.0f, engine->m_crossfadeDurationMs);
+    
     engine->m_transitionPending = true;
     QMetaObject::invokeMethod(engine, "processPendingTransitions", Qt::QueuedConnection);
 #else
@@ -530,7 +531,7 @@ void GaplessAudioEngine::processPendingTransitions()
 #ifdef MUSICPLAYER_HAS_BASS
     if (!m_nextStream) return;
 
-    qDebug() << "[bass] Track transition";
+    m_streamFx.remove(m_activeStream);
     m_activeStream = m_nextStream;
     m_nextStream = 0;
     m_currentFilePath = m_preparedNextPath;

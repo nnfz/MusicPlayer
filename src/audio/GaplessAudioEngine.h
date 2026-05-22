@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QVector>
 #include <QPair>
+#include <QMap>
 
 #include "Equalizer.h"
 
@@ -16,7 +17,7 @@
 #include <bassmix.h>
 #else
 typedef unsigned long HSTREAM;
-typedef unsigned long HDSP;
+typedef unsigned long HFX;
 typedef unsigned long HSYNC;
 #endif
 
@@ -84,11 +85,12 @@ signals:
     void outputDeviceChanged();
     void playbackRateChanged(float rate);
     void currentAudioLevel(float level);
-    void bassLevel(float level); // Assuming this meant low-frequency for visualizer, we can simulate it
+    void bassLevel(float level);
 
 private slots:
     void onPositionTick();
     void processPendingTransitions();
+    void applyEqToAll();
 
 private:
     void initBass();
@@ -98,13 +100,12 @@ private:
     void setupStream(HSTREAM stream);
     void applyVolume(HSTREAM stream);
     void applyPlaybackRate(HSTREAM stream);
-    void setupDsp(HSTREAM stream);
-    void removeDsp(HSTREAM stream);
+    void setupEq(HSTREAM stream);
+    void updateEq(HSTREAM stream);
     void updateState(State newState);
 
     static void CALLBACK AudioEndSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
     static void CALLBACK CrossfadeSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
-    static void CALLBACK EqDspProc(HDSP handle, unsigned long channel, void *buffer, unsigned long length, void *user);
 
     int getBassDeviceIndex(const QString &deviceId) const;
 
@@ -126,7 +127,12 @@ private:
     HSTREAM m_nextStream = 0;
     HSYNC m_endSync = 0;
     HSYNC m_crossfadeSync = 0;
-    HDSP m_eqDsp = 0;
+    
+    struct FxState {
+        HFX eq = 0;
+        HFX vol = 0;
+    };
+    QMap<HSTREAM, FxState> m_streamFx;
     
     bool m_transitionPending = false;
 };

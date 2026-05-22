@@ -19,7 +19,7 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     , m_eq(eq)
 {
     setWindowTitle("Equalizer");
-    setMinimumWidth(680);
+    setMinimumWidth(720);
     setFixedHeight(380);
     setStyleSheet("QDialog { background: #1e1e1e; color: white; }");
 
@@ -27,13 +27,17 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     mainLayout->setContentsMargins(12, 12, 12, 12);
     mainLayout->setSpacing(8);
 
-    // Top row: enable + presets + reset
+    // Top row: enable + auto level + presets + reset
     QHBoxLayout *topRow = new QHBoxLayout();
     topRow->setSpacing(12);
 
     m_enableCheck = new QCheckBox("Enable EQ");
     m_enableCheck->setChecked(m_eq->isEnabled());
     m_enableCheck->setStyleSheet("QCheckBox { color: white; font-size: 13px; } QCheckBox::indicator { width: 16px; height: 16px; }");
+
+    m_autoLevelCheck = new QCheckBox("Auto Level");
+    m_autoLevelCheck->setChecked(m_eq->autoLevelEnabled());
+    m_autoLevelCheck->setStyleSheet("QCheckBox { color: white; font-size: 13px; } QCheckBox::indicator { width: 16px; height: 16px; }");
 
     m_presetCombo = new QComboBox();
     m_presetCombo->addItems({"Flat", "Rock", "Pop", "Jazz", "Classical", "Bass Boost", "Vocal", "Electronic"});
@@ -49,6 +53,7 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     resetBtn->setCursor(Qt::PointingHandCursor);
 
     topRow->addWidget(m_enableCheck);
+    topRow->addWidget(m_autoLevelCheck);
     topRow->addStretch();
     topRow->addWidget(new QLabel("Preset:"));
     topRow->addWidget(m_presetCombo);
@@ -172,6 +177,12 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
         settings.setValue("Equalizer/enabled", on);
     });
 
+    connect(m_autoLevelCheck, &QCheckBox::toggled, this, [this](bool on) {
+        m_eq->setAutoLevelEnabled(on);
+        QSettings settings("MyCompany", "MusicPlayer");
+        settings.setValue("Equalizer/autoLevel", on);
+    });
+
     connect(m_presetCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
         const double *presets[] = {
             PRESET_FLAT, PRESET_ROCK, PRESET_POP, PRESET_JAZZ,
@@ -193,6 +204,10 @@ void EqualizerDialog::loadFromEqualizer()
     bool enabled = settings.value("Equalizer/enabled", true).toBool();
     m_enableCheck->setChecked(enabled);
     m_eq->setEnabled(enabled);
+
+    bool autoLevel = settings.value("Equalizer/autoLevel", false).toBool();
+    m_autoLevelCheck->setChecked(autoLevel);
+    m_eq->setAutoLevelEnabled(autoLevel);
 
     double preamp = settings.value("Equalizer/preamp", 0.0).toDouble();
     m_preampSlider->blockSignals(true);

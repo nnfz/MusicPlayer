@@ -2,35 +2,23 @@
 #define EQUALIZER_H
 
 #include <QObject>
-#include <QMap>
-#include <QMutex>
 #include <array>
-#include <vector>
-#include <cmath>
 
 static constexpr int EQ_BAND_COUNT = 18;
 
+// Exact foobar2000 standard 18-band frequencies
 static constexpr double EQ_FREQUENCIES[EQ_BAND_COUNT] = {
-    65, 92, 131, 185, 262, 370, 523, 740,
-    1047, 1480, 2093, 2960, 4186, 5920, 8372, 11840, 16744, 20000
+    55, 77, 110, 156, 220, 311, 440, 622, 880,
+    1200, 1800, 2500, 3500, 5000, 7000, 10000, 14000, 20000
 };
 
 inline const char* eqLabel(int i) {
     static const char* labels[EQ_BAND_COUNT] = {
-        "65", "92", "131", "185", "262", "370", "523", "740",
-        "1.0k", "1.5k", "2.1k", "3.0k", "4.2k", "5.9k", "8.4k", "12k", "17k", "20k"
+        "55", "77", "110", "156", "220", "311", "440", "622", "880",
+        "1.2k", "1.8k", "2.5k", "3.5k", "5k", "7k", "10k", "14k", "20k"
     };
     return labels[i];
 }
-
-struct BiquadState {
-    float x1 = 0, x2 = 0;
-    float y1 = 0, y2 = 0;
-};
-
-struct BiquadCoeffs {
-    float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-};
 
 class Equalizer : public QObject
 {
@@ -38,74 +26,39 @@ class Equalizer : public QObject
 public:
     explicit Equalizer(QObject *parent = nullptr);
 
-    void setSampleRate(int sampleRate);
     void setBandGain(int band, double dBGain);
     double bandGain(int band) const;
+    
     void setPreamp(double dB);
     double preamp() const { return m_preampDb; }
+    
     void setEnabled(bool on);
     bool isEnabled() const { return m_enabled; }
 
     void setAutoLevelEnabled(bool on);
     bool autoLevelEnabled() const { return m_autoLevelEnabled; }
     double autoLevelDb() const { return m_autoLevelDb; }
-    bool hasOutput() const;
-    void beginBatch();
+
+    void beginBatch() { m_batchMode = true; }
     void endBatch();
 
-    void process(void* streamId, float *samples, qint64 sampleCount, int channels);
-    void clearStreamState(void* streamId);
-
-    void resetState();
-    void prepareForSeek();
-
     double computePeakGainDb() const;
-
-    static int preferredProcessBytes(int, int) { return 256; }
 
 signals:
     void bandsChanged();
     void autoLevelChanged(double dB);
 
 private:
-    static constexpr int kTransitionFrames = 2048;
-
-    struct StreamState {
-        std::vector<std::array<BiquadState, EQ_BAND_COUNT>> chState;
-        std::vector<std::array<BiquadState, EQ_BAND_COUNT>> chStatePrev;
-        int transFramesLeft = 0;
-        int lastChannels = 0;
-    };
-
-    BiquadCoeffs makeLowShelf(double freq, double gainDb, double q) const;
-    BiquadCoeffs makeHighShelf(double freq, double gainDb, double q) const;
-    BiquadCoeffs makePeaking(double freq, double gainDb, double q) const;
-    BiquadCoeffs makeCoeffsForGain(int band, double gainDb) const;
-    void updateActiveBands();
-    void updateCoefficients();
-    StreamState& getStreamState(void* streamId, int channels);
-    inline float processBiquad(BiquadState &s, const BiquadCoeffs &c, float x) const;
     void recalcAutoLevel();
 
-    int m_sampleRate = 44100;
     bool m_enabled = true;
     bool m_autoLevelEnabled = false;
     double m_preampDb = 0.0;
-    double m_preampLinear = 1.0;
     double m_autoLevelDb = 0.0;
-    double m_autoLevelLinear = 1.0;
 
     std::array<double, EQ_BAND_COUNT> m_gains{};
-    std::array<double, EQ_BAND_COUNT> m_prevGains{};
-    std::array<bool, EQ_BAND_COUNT> m_activeBand{};
-    std::array<BiquadCoeffs, EQ_BAND_COUNT> m_coeffs{};
-    std::array<BiquadCoeffs, EQ_BAND_COUNT> m_prevCoeffs{};
-
-    mutable QMutex m_mutex;
-    QMap<void*, StreamState> m_states;
-
     bool m_batchMode = false;
-    bool m_coeffDirty = false;
+    bool m_dirty = false;
 };
 
 #endif
