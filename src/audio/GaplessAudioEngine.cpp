@@ -428,10 +428,17 @@ void CALLBACK GaplessAudioEngine::EndSyncProc(HSYNC handle, unsigned long channe
     Q_UNUSED(handle)
     Q_UNUSED(channel)
     Q_UNUSED(data)
+#ifdef MUSICPLAYER_HAS_BASS
     GaplessAudioEngine *engine = static_cast<GaplessAudioEngine*>(user);
     if (engine) {
+        if (engine->m_crossfadeDurationMs == 0 && engine->m_nextStream) {
+            BASS_ChannelPlay(engine->m_nextStream, FALSE);
+        }
         engine->m_transitionPending = true;
     }
+#else
+    Q_UNUSED(user)
+#endif
 }
 
 void CALLBACK GaplessAudioEngine::CrossfadeSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user)
@@ -479,14 +486,14 @@ void GaplessAudioEngine::processPendingTransitions()
             BASS_ChannelSetAttribute(m_activeStream, BASS_ATTRIB_VOL, m_volume);
             
             // Reattach syncs
-            m_endSync = BASS_ChannelSetSync(m_activeStream, BASS_SYNC_END, 0, EndSyncProc, this);
+            m_endSync = BASS_ChannelSetSync(m_activeStream, BASS_SYNC_END | BASS_SYNC_MIXTIME, 0, EndSyncProc, this);
             if (m_crossfadeDurationMs > 0) {
                 qint64 lenBytes = BASS_ChannelGetLength(m_activeStream, BASS_POS_BYTE);
                 double lenSecs = BASS_ChannelBytes2Seconds(m_activeStream, lenBytes);
                 double crossfadeSecs = m_crossfadeDurationMs / 1000.0;
                 if (lenSecs > crossfadeSecs * 2) {
                     qint64 syncBytes = BASS_ChannelSeconds2Bytes(m_activeStream, lenSecs - crossfadeSecs);
-                    m_crossfadeSync = BASS_ChannelSetSync(m_activeStream, BASS_SYNC_POS, syncBytes, CrossfadeSyncProc, this);
+                    m_crossfadeSync = BASS_ChannelSetSync(m_activeStream, BASS_SYNC_POS | BASS_SYNC_MIXTIME, syncBytes, CrossfadeSyncProc, this);
                 }
             }
             
