@@ -508,7 +508,14 @@ void GaplessAudioEngine::onPositionTick()
         if (BASS_Mixer_ChannelIsActive(m_activeStream) == BASS_ACTIVE_STOPPED) {
             qint64 pos = position();
             qint64 dur = duration();
-            if (dur > 0 && pos < dur - 100) return;
+            if (dur > 0 && pos < dur - 100) {
+                qDebug() << "[bass] Active stream stopped prematurely at" << pos << "/" << dur << "- attempting recovery or stop";
+                if (!m_nextStream) {
+                    updateState(Stopped);
+                    emit playbackFinished();
+                    return;
+                }
+            }
             if (m_nextStream) {
                 processPendingTransitions();
             } else {

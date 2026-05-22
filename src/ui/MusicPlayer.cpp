@@ -26,6 +26,8 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QMediaMetaData>
+#include <QApplication>
+#include <QTextEdit>
 
 #ifdef Q_OS_WIN
 #include "WinTaskbarButtons.h"
@@ -344,7 +346,7 @@ void MusicPlayer::setupUI()
     sidebarTitle->setStyleSheet("background: transparent; color: #888; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;");
     sidebarLayout->addWidget(sidebarTitle);
 
-    m_playlistList = new QListWidget();
+    m_playlistList = new NoXButtonListWidget();
     m_playlistList->setStyleSheet(
         "QListWidget { background: #2b2b2b; border: none; color: white; font-size: 13px; outline: none; }"
         "QListWidget::item { padding: 8px 8px 8px 12px; border-radius: 4px; background: transparent; border-left: 3px solid transparent; }"
@@ -666,7 +668,8 @@ void MusicPlayer::setupConnections()
     connect(m_nextButton, &QPushButton::clicked, this, &MusicPlayer::next);
     connect(m_previousButton, &QPushButton::clicked, this, &MusicPlayer::previous);
     connect(m_playlistTable, &PlaylistTable::deleteRequested, this, &MusicPlayer::removeSelected);
-
+    qApp->installEventFilter(this);
+    
     connect(m_positionSlider, &ClickableSlider::sliderPressed, this, [this]() {
         ++m_seekUiEpoch;
         m_userSeeking = true;
@@ -757,8 +760,8 @@ void MusicPlayer::setupConnections()
     connect(m_playlistTable->horizontalHeader(), &QHeaderView::sectionClicked, this, &MusicPlayer::onHeaderClicked);
     connect(m_playlistTable->horizontalHeader(), &QHeaderView::customContextMenuRequested, this, &MusicPlayer::showHeaderContextMenu);
 
-    m_playlistTable->installEventFilter(this);
     m_playlistTable->viewport()->installEventFilter(this);
+    m_playlistList->viewport()->installEventFilter(this);
 
     // Connect scroll for lazy metadata loading of visible rows
     auto *scrollBar = m_playlistTable->verticalScrollBar();
@@ -1857,38 +1860,42 @@ void MusicPlayer::exportM3UPlaylist()
 
 bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
 {
-    // Mouse side buttons navigation
-    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
-        auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::XButton1 || me->button() == Qt::XButton2) {
-            const bool isSidebar = (watched == m_playlistList || watched == m_playlistList->viewport());
-            const bool isTable = (watched == m_playlistTable || watched == m_playlistTable->viewport());
-            
-            if (event->type() == QEvent::MouseButtonPress) {
-                // Intercept press to prevent selection/focus changes
-                return true; 
-            }
-
-            if (isSidebar) {
-                int row = m_playlistList->currentRow();
-                // Playlist order: XButton1 -> Down, XButton2 -> Up
-                if (me->button() == Qt::XButton1) row++;
-                else row--;
-                if (row >= 0 && row < m_playlistList->count()) {
-                    m_playlistList->setCurrentRow(row);
-                }
-                return true;
-            } else if (isTable) {
-                // Track order: Inverted as requested (XButton1 -> Previous, XButton2 -> Next)
-                if (me->button() == Qt::XButton1) previous();
-                else next();
-                m_playlistTable->clearSelection();
-                m_playlistTable->setFocus();
+    if (event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Space) {
+            QWidget *focused = QApplication::focusWidget();
+            const bool inTextInput = qobject_cast<QLineEdit *>(focused) != nullptr
+                                || qobject_cast<QTextEdit *>(focused) != nullptr;
+            if (!inTextInput) {
+                playPause();
                 return true;
             }
         }
     }
+    if (event->type() == QEvent::Wheel) {
+        auto *we = static_cast<QWheelEvent *>(event);
+        if (we->modifiers() & Qt::AltModifier) {
+            const int raw = we->angleDelta().x() + we->angleDelta().y();
+            if (raw == 0) return true;
+            const int delta = raw > 0 ? 1 : -1;
+            m_volumeSlider->setValue(qBound(0, m_volumeSlider->value() + delta, 100));
+            return true;
+        }
+    }
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::XButton1 || me->button() == Qt::XButton2) {
+            if (event->type() == QEvent::MouseButtonPress)
+                return true;
 
+            const bool isQWidgetWindow = watched->inherits("QWidgetWindow");
+            if (isQWidgetWindow) {
+                if (me->button() == Qt::XButton1) previous();
+                else next();
+            }
+            return true;
+        }
+    }
     // Volume icon click → toggle mute
     if (watched == m_volumeLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
@@ -3405,12 +3412,22 @@ void MusicPlayer::previous()
             }
         }
 
-        if (activePlaylistTrackIsPlaying && m_engine->position() > 3000) {
-            m_engine->seek(0);
+        qint64 currentPos = m_engine->position();
+        if (m_activeIsCue)
+            currentPos -= m_activeCueStartMs;
+
+        // If current track is playing (or paused) and we're more than 3 seconds in, restart it.
+        // Otherwise, go to the previous track in the playlist.
+        if (activePlaylistTrackIsPlaying && currentPos > 3000) {
+            m_resumeOnPlayPath.clear();
+            m_resumeOnPlayPositionMs = -1;
+            playCurrentItem();
         } else {
             const int prevIdx = getPreviousTrackIndex();
             if (isValidTrackIndex(prevIdx)) {
                 m_currentIndex = prevIdx;
+                m_resumeOnPlayPath.clear();
+                m_resumeOnPlayPositionMs = -1;
                 playCurrentItem();
             }
         }

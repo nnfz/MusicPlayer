@@ -93,6 +93,8 @@ void PlaylistTable::enforceRightmostResizeLock()
 
 void PlaylistTable::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::XButton1 || event->button() == Qt::XButton2)
+        return;
     if (event->button() == Qt::LeftButton) {
         m_dragStartPos = event->pos();
         m_isDragging = false;
@@ -191,6 +193,8 @@ void PlaylistTable::leaveEvent(QEvent *event)
 
 void PlaylistTable::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::XButton1 || event->button() == Qt::XButton2)
+        return;
     if (m_isDragging && event->button() == Qt::LeftButton) {
         if (!m_draggedRows.isEmpty() && rect().contains(event->pos())) {
             int dropRow = rowAt(event->pos().y());

@@ -33,6 +33,21 @@ class WinTaskbarButtons;
 #include "MetadataLoaderThread.h"
 #include "FullscreenPlayer.h"
 
+class NoXButtonListWidget : public QListWidget {
+    Q_OBJECT
+public:
+    explicit NoXButtonListWidget(QWidget *parent = nullptr) : QListWidget(parent) {}
+protected:
+    void mousePressEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::XButton1 || e->button() == Qt::XButton2) return;
+        QListWidget::mousePressEvent(e);
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::XButton1 || e->button() == Qt::XButton2) return;
+        QListWidget::mouseReleaseEvent(e);
+    }
+};
+
 class MusicPlayer : public QMainWindow
 {
     Q_OBJECT
