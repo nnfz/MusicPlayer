@@ -22,12 +22,12 @@ inline const char* eqLabel(int i) {
 }
 
 struct BiquadState {
-    double x1 = 0, x2 = 0;
-    double y1 = 0, y2 = 0;
+    float x1 = 0, x2 = 0;
+    float y1 = 0, y2 = 0;
 };
 
 struct BiquadCoeffs {
-    double b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
 };
 
 class Equalizer : public QObject
@@ -51,7 +51,7 @@ public:
     void beginBatch();
     void endBatch();
 
-    void process(char *data, qint64 bytes, int channels, int bytesPerSample);
+    void process(float *samples, qint64 sampleCount, int channels);
 
     void resetState();
     void prepareForSeek();
@@ -73,7 +73,7 @@ private:
     BiquadCoeffs makeCoeffsForGain(int band, double gainDb) const;
     void updateActiveBands();
     void ensureChannelState(int channels);
-    float processBiquad(BiquadState &s, const BiquadCoeffs &c, float x) const;
+    inline float processBiquad(BiquadState &s, const BiquadCoeffs &c, float x) const;
     void recalcAutoLevel();
 
     int m_sampleRate = 44100;
@@ -86,11 +86,8 @@ private:
 
     std::array<double, EQ_BAND_COUNT> m_gains{};
     std::array<double, EQ_BAND_COUNT> m_prevGains{};
-
-    // Whether each band is active (gain != 0)
     std::array<bool, EQ_BAND_COUNT> m_activeBand{};
 
-    // Biquad state: one per band per channel
     std::vector<std::array<BiquadState, EQ_BAND_COUNT>> m_chState;
     int m_lastChannels = 0;
     int m_transFramesLeft = 0;
@@ -99,4 +96,4 @@ private:
     bool m_coeffDirty = false;
 };
 
-#endif // EQUALIZER_H
+#endif

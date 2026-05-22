@@ -102,7 +102,7 @@ private:
     void removeDsp(HSTREAM stream);
     void updateState(State newState);
 
-    static void CALLBACK EndSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
+    static void CALLBACK AudioEndSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
     static void CALLBACK CrossfadeSyncProc(HSYNC handle, unsigned long channel, unsigned long data, void *user);
     static void CALLBACK EqDspProc(HDSP handle, unsigned long channel, void *buffer, unsigned long length, void *user);
 
