@@ -2829,19 +2829,30 @@ void MusicPlayer::addFile(const QString &filePath)
 
 void MusicPlayer::addDirectory(const QString &dirPath)
 {
-    QDir dir(dirPath);
-    QFileInfoList cueFiles = dir.entryInfoList({QStringLiteral("*.cue")}, QDir::Files, QDir::Name);
-    QSet<QString> cueAudioKeys;
+    QStringList filters = audioNameFilters();
+    filters.append(QStringLiteral("*.cue"));
 
-    for (const QFileInfo &cueInfo : cueFiles) {
-        const QList<CueTrack> cueTracks = CueParser::parse(cueInfo.absoluteFilePath());
-        if (cueTracks.isEmpty())
-            continue;
+    QDirIterator it(dirPath, filters, QDir::Files, QDirIterator::Subdirectories);
+    QStringList cueFiles;
+    QStringList directAudioFiles;
+
+    while (it.hasNext()) {
+        QString path = it.next();
+        if (path.endsWith(QStringLiteral(".cue"), Qt::CaseInsensitive))
+            cueFiles.append(path);
+        else
+            directAudioFiles.append(path);
+    }
+
+    QSet<QString> cueAudioKeys;
+    // Process CUE files first to identify referenced audio files
+    for (const QString &cuePath : cueFiles) {
+        const QList<CueTrack> cueTracks = CueParser::parse(cuePath);
+        if (cueTracks.isEmpty()) continue;
 
         QMap<QString, QImage> coverCache;
         for (const CueTrack &ct : cueTracks) {
-            if (!QFileInfo::exists(ct.audioFilePath))
-                continue;
+            if (!QFileInfo::exists(ct.audioFilePath)) continue;
 
             cueAudioKeys.insert(normalizePathForCompare(ct.audioFilePath));
             if (!coverCache.contains(ct.audioFilePath))
@@ -2851,13 +2862,11 @@ void MusicPlayer::addDirectory(const QString &dirPath)
         }
     }
 
-    QFileInfoList files = dir.entryInfoList(audioNameFilters(), QDir::Files, QDir::Name);
-
-    for (const QFileInfo &fileInfo : files) {
-        const QString absolutePath = fileInfo.absoluteFilePath();
-        if (cueAudioKeys.contains(normalizePathForCompare(absolutePath)))
+    // Add remaining audio files that are NOT part of a CUE
+    for (const QString &audioPath : directAudioFiles) {
+        if (cueAudioKeys.contains(normalizePathForCompare(audioPath)))
             continue;
-        addFile(absolutePath);
+        addFile(audioPath);
     }
 }
 
