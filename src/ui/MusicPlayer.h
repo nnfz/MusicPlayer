@@ -144,6 +144,7 @@ private:
     QStringList collectUniqueTrackPathsForBackgroundPreload() const;
     QStringList collectTracksFromAutoSource(const QString &dirPath) const;
     QString findPlaylistIdByName(const QString &name) const;
+    QString getLikedPlaylistId() const;
     QString ensureLikedPlaylist();
     bool isTrackLiked(const QString &filePath) const;
     void updateLikeButtonState();

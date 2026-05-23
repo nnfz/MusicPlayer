@@ -366,8 +366,13 @@ void MusicPlayer::setupUI()
         if (!item) return;
         const QString id = item->data(Qt::UserRole).toString();
         const QString newName = item->text().trimmed();
-        if (!id.isEmpty() && id != kAllPlaylistVirtualId && !newName.isEmpty()) {
-            m_playlistManager->renamePlaylist(id, newName);
+        if (!id.isEmpty() && !newName.isEmpty()) {
+            if (id == kAllPlaylistVirtualId) {
+                QSettings settings;
+                settings.setValue("AllPlaylistName", newName);
+            } else {
+                m_playlistManager->renamePlaylist(id, newName);
+            }
         }
     });
 
@@ -406,6 +411,7 @@ void MusicPlayer::setupUI()
         if (!item) return;
         const QString playlistId = item->data(Qt::UserRole).toString();
         const bool isAllPlaylist = (playlistId == kAllPlaylistVirtualId);
+        const bool isLikedPlaylist = (playlistId == getLikedPlaylistId());
 
         QMenu menu;
         menu.setStyleSheet("QMenu { background: #2b2b2b; color: white; border: 1px solid #555; } QMenu::item:selected { background: #0078d7; }");
@@ -417,9 +423,11 @@ void MusicPlayer::setupUI()
         deleteAct->setIcon(QIcon());
 
         if (isAllPlaylist) {
-            renameAct->setEnabled(false);
             autoSourceAct->setEnabled(false);
             exportAct->setEnabled(false);
+        }
+        
+        if (isAllPlaylist || isLikedPlaylist) {
             deleteAct->setEnabled(false);
         }
 
@@ -939,9 +947,12 @@ void MusicPlayer::refreshPlaylistPanel()
 
     m_playlistList->clear();
 
-    QListWidgetItem *allItem = new QListWidgetItem(kAllPlaylistDisplayName);
+    QSettings settings("MyCompany", "MusicPlayer");
+    QString allName = settings.value("AllPlaylistName", kAllPlaylistDisplayName).toString();
+
+    QListWidgetItem *allItem = new QListWidgetItem(allName);
     allItem->setData(Qt::UserRole, kAllPlaylistVirtualId);
-    allItem->setFlags(allItem->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled & ~Qt::ItemIsEditable);
+    allItem->setFlags((allItem->flags() | Qt::ItemIsEditable) & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled);
     m_playlistList->addItem(allItem);
 
     for (const auto &pl : m_playlistManager->playlists()) {
@@ -1009,13 +1020,33 @@ QString MusicPlayer::findPlaylistIdByName(const QString &name) const
     return {};
 }
 
+QString MusicPlayer::getLikedPlaylistId() const
+{
+    QSettings settings("MyCompany", "MusicPlayer");
+    QString id = settings.value("LikedPlaylistId").toString();
+    if (!id.isEmpty() && m_playlistManager->playlist(id))
+        return id;
+
+    // Fallback if not found in settings
+    for (const auto &pl : m_playlistManager->playlists()) {
+        if (pl.name.trimmed().compare(kLikedPlaylistName, Qt::CaseInsensitive) == 0) {
+            settings.setValue("LikedPlaylistId", pl.id);
+            return pl.id;
+        }
+    }
+    return {};
+}
+
 QString MusicPlayer::ensureLikedPlaylist()
 {
-    const QString existingId = findPlaylistIdByName(kLikedPlaylistName);
+    const QString existingId = getLikedPlaylistId();
     if (!existingId.isEmpty())
         return existingId;
 
     const QString likedId = m_playlistManager->createPlaylist(kLikedPlaylistName);
+    QSettings settings("MyCompany", "MusicPlayer");
+    settings.setValue("LikedPlaylistId", likedId);
+
     primePlaylistCache(likedId, {});
     refreshPlaylistPanel();
     return likedId;
@@ -1759,9 +1790,6 @@ void MusicPlayer::renameSelectedPlaylist()
 {
     QListWidgetItem *item = m_playlistList->currentItem();
     if (!item) return;
-    QString id = item->data(Qt::UserRole).toString();
-    if (id == kAllPlaylistVirtualId)
-        return;
 
     item->setFlags(item->flags() | Qt::ItemIsEditable);
     m_playlistList->editItem(item);
@@ -1777,7 +1805,7 @@ void MusicPlayer::deleteSelectedPlaylist()
     QListWidgetItem *item = m_playlistList->currentItem();
     if (!item) return;
     QString id = item->data(Qt::UserRole).toString();
-    if (id == kAllPlaylistVirtualId)
+    if (id == kAllPlaylistVirtualId || id == getLikedPlaylistId())
         return;
 
     m_playlistScrollPositions.remove(id);
@@ -1990,6 +2018,17 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
         if (ke->key() == Qt::Key_F2) {
             renameSelectedPlaylist();
             return true;
+        }
+    }
+
+    if (watched == m_playlistList->viewport() && event->type() == QEvent::MouseButtonDblClick) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            QListWidgetItem *item = m_playlistList->itemAt(me->pos());
+            if (!item) {
+                createNewPlaylist();
+                return true;
+            }
         }
     }
 
