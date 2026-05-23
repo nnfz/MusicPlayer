@@ -39,7 +39,6 @@
 #include <QUrlQuery>
 #include <algorithm>
 #include <limits>
-#include <cmath>
 #include <QDateTime>
 
 // ---------------------------------------------------------------------------
@@ -70,7 +69,8 @@ static int durationToSeconds(int ms)
 {
     if (ms <= 0)
         return 0;
-    return qMax(1, static_cast<int>(std::lround(ms / 1000.0)));
+    // Manual rounding to avoid <cmath> dependency/conflicts
+    return qMax(1, static_cast<int>((ms / 1000.0) + 0.5));
 }
 
 static constexpr int kCardWidth = 440;
@@ -299,7 +299,7 @@ public:
         if (m_view && m_view->viewport()) {
             int viewH = m_view->viewport()->height();
             int cy = contentRect.center().y();
-            float dist = std::abs(cy - viewH / 2.0f);
+            float dist = qAbs(cy - viewH / 2.0f);
             float maxDist = viewH / 2.0f;
             float normalizedDist = dist / maxDist; // 0 at center, 1 at edge
             float alpha = 1.0f;
@@ -601,6 +601,8 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     m_seekSlider = new ClickableSlider(Qt::Horizontal, m_mainPanel);
     m_seekSlider->setRange(0, 0);
+    m_seekSlider->setSingleStep(5000);
+    m_seekSlider->setPageStep(15000);
     m_seekSlider->setStyleSheet(sliderSS);
     m_seekSlider->setCursor(Qt::PointingHandCursor);
     connect(m_seekSlider, &QSlider::sliderPressed,  this, [this] { m_userSeeking = true; });
@@ -1169,7 +1171,7 @@ void FullscreenPlayer::onLyricsReplyFinished()
         const QString gotArtist = normalizeLyricsKey(obj.value(QStringLiteral("artistName")).toString());
         const int duration = obj.value(QStringLiteral("duration")).toInt();
         const int diff = (m_trackDurationSec > 0 && duration > 0)
-            ? std::abs(duration - m_trackDurationSec)
+            ? qAbs(duration - m_trackDurationSec)
             : std::numeric_limits<int>::max();
 
         int score = 0;
@@ -1739,7 +1741,8 @@ void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
             int dr = bc.color.red() - existing.red();
             int dg = bc.color.green() - existing.green();
             int db = bc.color.blue() - existing.blue();
-            if (std::sqrt(dr*dr + dg*dg + db*db) < 45) {
+            // Use squared distance (45^2 = 2025) to avoid sqrt/cmath
+            if ((dr*dr + dg*dg + db*db) < 2025) {
                 tooSimilar = true;
                 break;
             }

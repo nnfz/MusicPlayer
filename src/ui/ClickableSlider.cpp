@@ -1,5 +1,6 @@
 #include "ClickableSlider.h"
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QStyle>
 #include <QStyleOptionSlider>
 
@@ -79,4 +80,27 @@ void ClickableSlider::mouseReleaseEvent(QMouseEvent *event)
     } else {
         QSlider::mouseReleaseEvent(event);
     }
+}
+
+void ClickableSlider::wheelEvent(QWheelEvent *event)
+{
+    int delta = event->angleDelta().y();
+    if (delta == 0) delta = event->angleDelta().x();
+    if (delta == 0) {
+        event->ignore();
+        return;
+    }
+
+    int steps = delta / 120;
+    if (steps == 0) steps = (delta > 0) ? 1 : -1;
+
+    // Use singleStep() for fine control via wheel.
+    // For seekbar, we'll set this to something like 5s.
+    int amount = steps * singleStep();
+
+    emit sliderPressed();
+    setValue(value() + amount);
+    emit sliderReleased();
+
+    event->accept();
 }

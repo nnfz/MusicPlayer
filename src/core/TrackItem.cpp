@@ -1465,24 +1465,32 @@ void TrackItem::ensureMetadataLoaded()
     cachedMeta.filePath = m_metadata.filePath;
 
     if (tryLoadTrackMetadataFromCache(fileInfo, cachedMeta)) {
-        m_metadata = cachedMeta;
+        if (m_metadata.isCueTrack) {
+            m_metadata.coverArt = cachedMeta.coverArt;
+            m_metadata.bitrate = cachedMeta.bitrate;
+            m_metadata.sampleRate = cachedMeta.sampleRate;
+            if (m_metadata.duration <= 0) {
+                // For the last track in a CUE file, we need the total duration to calculate its end
+                qint64 totalDur = cachedMeta.duration;
+                if (totalDur > 0 && m_metadata.cueStartMs > 0) {
+                    m_metadata.duration = qMax<qint64>(0, totalDur - m_metadata.cueStartMs);
+                }
+            }
+        } else {
+            m_metadata = cachedMeta;
+        }
         m_metadataLoaded = true;
         
-        // Background refresh only if strictly necessary
-        const bool isDefault = isDefaultCoverImage(m_metadata.coverArt);
+        // Only refresh if the cached cover is corrupted/suspicious.
+        // DO NOT refresh if it is a default cover, because that means we already 
+        // searched for a cover previously and found nothing. Re-searching 
+        // large audio files repeatedly blocks the background thread.
         const bool isSuspicious = isSuspiciousCoverImage(m_metadata.coverArt);
 
-        if (isDefault || isSuspicious) {
+        if (isSuspicious) {
             const QImage refreshedCover = extractCoverArt(m_metadata.filePath);
-            
-            // CRITICAL FIX: Always update the cache to prevent an infinite loop 
-            // of re-searching every time the playlist is opened. 
-            // If refreshed is still null/default, we save it as "final result" for this file.
             if (!refreshedCover.isNull()) {
                 m_metadata.coverArt = refreshedCover;
-            } else if (isSuspicious) {
-                // If we have a suspicious cover and found nothing better, 
-                // just keep it but stop the refresh loop by ensuring it's in the cache.
             }
             updateTrackMetadataCache(fileInfo, m_metadata);
         }
@@ -1539,7 +1547,29 @@ void TrackItem::loadMetadata()
              if (m_metadata.coverArt.isNull())
                  m_metadata.coverArt = defaultCoverImage();
         }
+        
+        // Load basic stream info for CUE tracks if missing
+        if (m_metadata.bitrate <= 0 || m_metadata.sampleRate <= 0 || m_metadata.duration <= 0) {
+            TrackMetadata tempMeta;
+            tempMeta.filePath = m_metadata.filePath;
+#ifdef MUSICPLAYER_HAS_BASS
+            applyBassMetadata(tempMeta.filePath, tempMeta);
+#endif
+#ifdef MUSICPLAYER_HAS_FFMPEG
+            if (tempMeta.bitrate <= 0 || tempMeta.sampleRate <= 0)
+                applyFfmpegMetadata(tempMeta.filePath, tempMeta);
+#endif
+            if (m_metadata.bitrate <= 0) m_metadata.bitrate = tempMeta.bitrate;
+            if (m_metadata.sampleRate <= 0) m_metadata.sampleRate = tempMeta.sampleRate;
+            
+            // For the last track in a CUE file, we calculate its duration from the total
+            if (m_metadata.duration <= 0 && tempMeta.duration > 0 && m_metadata.cueStartMs > 0) {
+                m_metadata.duration = qMax<qint64>(0, tempMeta.duration - m_metadata.cueStartMs);
+            }
+        }
+        
         m_metadataLoaded = true;
+        updateTrackMetadataCache(fileInfo, m_metadata);
         return;
     }
 
@@ -1876,19 +1906,7 @@ QImage TrackItem::extractCoverArt(const QString &filePath)
 
     coverLog(filePath, QStringLiteral("extractCoverArt: begin"));
 
-    // 1. Try Native FLAC picture block (fastest for FLAC)
-    if (isFlac) {
-        QImage flacCover = extractFlacPictureCover(filePath);
-        if (!flacCover.isNull() && !isSuspiciousCoverImage(flacCover)) return makeSquareImage(flacCover);
-    }
-
-    // 2. Try FFmpeg (handles almost everything embedded)
-#ifdef MUSICPLAYER_HAS_FFMPEG
-    QImage embeddedCover = extractEmbeddedCoverArt(filePath);
-    if (!embeddedCover.isNull() && !isSuspiciousCoverImage(embeddedCover)) return makeSquareImage(embeddedCover);
-#endif
-
-    // 3. Try Folder images (common for high-quality rips)
+    // 1. Try Folder images (fastest, common for high-quality rips and CUE albums, avoids slow embedded scans on huge files)
     QStringList coverNames = {
         "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png",
         "album.jpg", "album.png", "artwork.jpg", "front.jpg"
@@ -1900,6 +1918,18 @@ QImage TrackItem::extractCoverArt(const QString &filePath)
             if (!img.isNull() && !isSuspiciousCoverImage(img)) return makeSquareImage(img);
         }
     }
+
+    // 2. Try Native FLAC picture block (fastest embedded for FLAC)
+    if (isFlac) {
+        QImage flacCover = extractFlacPictureCover(filePath);
+        if (!flacCover.isNull() && !isSuspiciousCoverImage(flacCover)) return makeSquareImage(flacCover);
+    }
+
+    // 3. Try FFmpeg (handles almost everything embedded, but can be slow if scanning large files for missing covers)
+#ifdef MUSICPLAYER_HAS_FFMPEG
+    QImage embeddedCover = extractEmbeddedCoverArt(filePath);
+    if (!embeddedCover.isNull() && !isSuspiciousCoverImage(embeddedCover)) return makeSquareImage(embeddedCover);
+#endif
 
     // 4. Last resort: manual ID3 APIC for MP3 if BASS/FFmpeg failed
     if (isMp3) {
@@ -1932,6 +1962,12 @@ QImage TrackItem::coverArtFromFile(const QString &filePath)
 TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QImage &sharedCover)
 {
     auto *item = new TrackItem(ct.audioFilePath, true);
+    
+    // Save any cached data loaded from tryLoadTrackMetadataFromCacheFast
+    QImage cachedCover = item->m_metadata.coverArt;
+    int cachedBitrate = item->m_metadata.bitrate;
+    int cachedSampleRate = item->m_metadata.sampleRate;
+    qint64 cachedDur = item->m_metadata.duration;
 
     item->m_metadata.filePath    = ct.audioFilePath;
     item->m_metadata.title       = ct.title.isEmpty()
@@ -1946,9 +1982,29 @@ TrackItem *TrackItem::fromCueTrack(const CueTrack &ct, const QImage &sharedCover
     item->m_metadata.cueEndMs    = ct.endMs;
     item->m_metadata.cueFilePath = ct.cueFilePath;
     item->m_metadata.isCueTrack  = true;
-    item->m_metadata.duration    = (ct.endMs >= 0) ? (ct.endMs - ct.startMs) : 0;
-    item->m_metadata.coverArt    = sharedCover.isNull() ? defaultCoverImage() : makeSquareImage(sharedCover);
-    item->m_metadataLoaded       = true;
+    
+    // Restore stream properties
+    if (cachedBitrate > 0) item->m_metadata.bitrate = cachedBitrate;
+    if (cachedSampleRate > 0) item->m_metadata.sampleRate = cachedSampleRate;
+    
+    // Duration calculation for CUE
+    item->m_metadata.duration = (ct.endMs >= 0) ? (ct.endMs - ct.startMs) : 0;
+    if (item->m_metadata.duration <= 0 && cachedDur > 0 && ct.startMs > 0) {
+        item->m_metadata.duration = qMax<qint64>(0, cachedDur - ct.startMs);
+    }
+    
+    if (!sharedCover.isNull()) {
+        item->m_metadata.coverArt = makeSquareImage(sharedCover);
+    } else if (!cachedCover.isNull() && !isDefaultCoverImage(cachedCover)) {
+        // If we found a valid cover in the cache for the underlying audio file, use it instantly!
+        item->m_metadata.coverArt = cachedCover;
+    } else {
+        item->m_metadata.coverArt = defaultCoverImage();
+    }
+    
+    // Always mark as false so the background thread verifies file modifications, 
+    // but the UI will display the cached cover immediately.
+    item->m_metadataLoaded = false; 
 
     return item;
 }

@@ -1,6 +1,8 @@
 #ifndef TRACKITEM_H
 #define TRACKITEM_H
 
+#include <chrono>
+#include <ratio>
 #include <QString>
 #include <QImage>
 #include <QPixmap>

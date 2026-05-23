@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QRegularExpression>
+#include <QStringDecoder>
 
 namespace {
 
@@ -38,22 +39,35 @@ QString decodeBytes(const QByteArray &raw)
         const auto b0 = static_cast<uchar>(raw[0]);
         const auto b1 = static_cast<uchar>(raw[1]);
         if (b0 == 0xFF && b1 == 0xFE)
-            return QString::fromUtf16(
-                reinterpret_cast<const char16_t *>(raw.constData() + 2),
-                (raw.size() - 2) / 2);
+            return QString::fromUtf16(reinterpret_cast<const char16_t *>(raw.constData()), raw.size() / 2);
         if (b0 == 0xFE && b1 == 0xFF) {
-            QByteArray sw = raw.mid(2);
-            for (int i = 0; i + 1 < sw.size(); i += 2)
-                std::swap(sw[i], sw[i + 1]);
-            return QString::fromUtf16(
-                reinterpret_cast<const char16_t *>(sw.constData()),
-                sw.size() / 2);
+            QByteArray swapped;
+            swapped.resize(raw.size());
+            for (int i = 0; i < raw.size() - 1; i += 2) {
+                swapped[i] = raw[i + 1];
+                swapped[i + 1] = raw[i];
+            }
+            return QString::fromUtf16(reinterpret_cast<const char16_t *>(swapped.constData()), swapped.size() / 2);
         }
     }
 
     const QString asUtf8 = QString::fromUtf8(raw);
     if (!asUtf8.contains(QChar::ReplacementCharacter))
         return asUtf8;
+
+    // It's not valid UTF-8. Often CUE files from Russian sources are Windows-1251.
+    // Try to decode as Windows-1251 specifically using QStringDecoder (Qt6).
+    auto cp1251Decoder = QStringDecoder("Windows-1251");
+    if (cp1251Decoder.isValid()) {
+        QString decoded1251 = cp1251Decoder(raw);
+        // Heuristic: check if there's Cyrillic text
+        int cyrillicScore = 0;
+        for (QChar c : decoded1251) {
+            if (c.script() == QChar::Script_Cyrillic) cyrillicScore++;
+        }
+        if (cyrillicScore > 0)
+            return decoded1251;
+    }
 
     const QString asLocal = QString::fromLocal8Bit(raw);
     if (!asLocal.isEmpty())

@@ -620,6 +620,8 @@ void MusicPlayer::setupUI()
 
     m_positionSlider = new ClickableSlider(Qt::Horizontal);
     m_positionSlider->setRange(0, 0);
+    m_positionSlider->setSingleStep(5000);
+    m_positionSlider->setPageStep(15000);
     m_positionSlider->setStyleSheet(sliderStyle);
     m_positionSlider->setCursor(Qt::PointingHandCursor);
 
@@ -1330,9 +1332,9 @@ void MusicPlayer::onPlaylistSelected(int row)
                 for (const CueTrack &ct : cueCache[cuePath]) {
                     if (ct.trackNumber != trackNum)
                         continue;
-                    if (!coverCache.contains(ct.audioFilePath))
-                        coverCache[ct.audioFilePath] = TrackItem::coverArtFromFile(ct.audioFilePath);
-                    m_tracks.append(TrackItem::fromCueTrack(ct, coverCache[ct.audioFilePath]));
+                    // Pass a null QImage to defer cover loading to the background thread.
+                    // The first track will cache the cover, subsequent tracks will use the cache.
+                    m_tracks.append(TrackItem::fromCueTrack(ct, QImage()));
                     break;
                 }
                 continue;
@@ -1650,6 +1652,18 @@ QStringList MusicPlayer::collectAllPlaylistTracks() const
             continue;
 
         for (const QString &path : pl.trackPaths) {
+            if (isCueSavedPath(path)) {
+                QString cuePath;
+                int trackNum = 0;
+                if (parseCueSavedPath(path, cuePath, trackNum) && QFileInfo::exists(cuePath)) {
+                    if (!seen.contains(path)) {
+                        seen.insert(path);
+                        tracks.append(path);
+                    }
+                }
+                continue;
+            }
+
             QFileInfo fi(path);
             if (!fi.exists())
                 continue;
@@ -1670,24 +1684,52 @@ QStringList MusicPlayer::collectAllPlaylistTracks() const
 QStringList MusicPlayer::collectTracksFromAutoSource(const QString &dirPath) const
 {
     QStringList tracks;
+    QStringList filters = audioNameFilters();
+    filters.append(QStringLiteral("*.cue"));
+    
     QDirIterator it(dirPath,
-                    audioNameFilters(),
+                    filters,
                     QDir::Files,
                     QDirIterator::Subdirectories);
+
+    QSet<QString> cueAudioKeys;
 
     while (it.hasNext()) {
         const QString path = it.next();
         QFileInfo fi(path);
-        if (fi.exists())
+        if (!fi.exists()) continue;
+
+        if (fi.suffix().toLower() == QStringLiteral("cue")) {
+            const QList<CueTrack> cueTracks = CueParser::parse(fi.absoluteFilePath());
+            for (const CueTrack &ct : cueTracks) {
+                if (QFileInfo::exists(ct.audioFilePath)) {
+                    tracks.append(makeCueSavedPath(ct.cueFilePath, ct.trackNumber));
+                    cueAudioKeys.insert(normalizePathForCompare(ct.audioFilePath));
+                }
+            }
+        } else {
             tracks.append(fi.absoluteFilePath());
+        }
     }
 
-    std::sort(tracks.begin(), tracks.end(), [](const QString &a, const QString &b) {
+    // Filter out audio files that were referenced by CUE files
+    QStringList finalTracks;
+    for (const QString &path : tracks) {
+        if (isCueSavedPath(path)) {
+            finalTracks.append(path);
+        } else {
+            if (!cueAudioKeys.contains(normalizePathForCompare(path))) {
+                finalTracks.append(path);
+            }
+        }
+    }
+
+    std::sort(finalTracks.begin(), finalTracks.end(), [](const QString &a, const QString &b) {
         return QString::localeAwareCompare(a, b) < 0;
     });
 
-    tracks.removeDuplicates();
-    return tracks;
+    finalTracks.removeDuplicates();
+    return finalTracks;
 }
 
 void MusicPlayer::createNewPlaylist()
@@ -2716,17 +2758,14 @@ void MusicPlayer::addCueFile(const QString &cuePath)
         return;
     }
 
-    QMap<QString, QImage> coverCache;
     int added = 0;
 
     for (const CueTrack &ct : cueTracks) {
         if (!QFileInfo::exists(ct.audioFilePath))
             continue;
 
-        if (!coverCache.contains(ct.audioFilePath))
-            coverCache[ct.audioFilePath] = TrackItem::coverArtFromFile(ct.audioFilePath);
-
-        m_tracks.append(TrackItem::fromCueTrack(ct, coverCache[ct.audioFilePath]));
+        // Pass a null QImage to defer cover loading to the background thread.
+        m_tracks.append(TrackItem::fromCueTrack(ct, QImage()));
         ++added;
     }
 
@@ -4304,7 +4343,7 @@ void MusicPlayer::updateTrackRow(int trackIndex)
 
     if (QTableWidgetItem *durItem = m_playlistTable->item(visualRow, COL_DURATION)) {
         durItem->setText(md.duration > 0 ? formatTime(md.duration) : "");
-        durItem->setTextAlignment(Qt::AlignCenter);
+        // Removed durItem->setTextAlignment(Qt::AlignCenter) to keep default left alignment
     }
     if (QTableWidgetItem *bitrateItem = m_playlistTable->item(visualRow, COL_BITRATE)) {
         bitrateItem->setText(md.bitrate > 0 ? QString::number(md.bitrate / 1000) : "");
