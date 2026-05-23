@@ -36,7 +36,7 @@ PlaylistTable::PlaylistTable(QWidget *parent)
     horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
 
     setStyleSheet(
-        "QTableWidget { border: 2px solid #555; border-radius: 5px; background-color: #2b2b2b; color: white; gridline-color: #3d3d3d; }"
+        "QTableWidget { border: 2px solid #555; border-radius: 5px; background-color: #1a1a1a; color: white; gridline-color: #282828; }"
         "QTableWidget::item { padding: 5px; border: none; color: white; }"
         "QHeaderView::section { background: transparent; color: white; padding: 8px; border: none; font-weight: bold; }"
         "QHeaderView::section:hover { background-color: #2d2d2d; }");
@@ -515,11 +515,11 @@ void RowHoverDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opti
     else if (isHovered && isPlaying)
         bgColor = QColor(40, 80, 120);
     else if (isHovered)
-        bgColor = QColor(55, 60, 75);
+        bgColor = QColor(45, 45, 45);
     else if (isPlaying)
-        bgColor = QColor(35, 55, 80);
+        bgColor = QColor(26, 43, 60);
     else if (index.row() % 2 == 1)
-        bgColor = QColor(0x32, 0x32, 0x32);
+        bgColor = QColor(0x18, 0x18, 0x18);
 
     if (bgColor.isValid())
         painter->fillRect(opt.rect, bgColor);

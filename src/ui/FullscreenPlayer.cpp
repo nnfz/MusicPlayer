@@ -533,9 +533,6 @@ MarqueeLabel::MarqueeLabel(QWidget *parent) : QWidget(parent)
 }
 
 void MarqueeLabel::setText(const QString &text)
-{
-    if (m_text == text) return;
-    m_text = text;
     m_offset = 0;
     m_anim->stop();
     m_textW = fontMetrics().horizontalAdvance(m_text);

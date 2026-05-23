@@ -21,7 +21,7 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     setWindowTitle("Equalizer");
     setMinimumWidth(720);
     setFixedHeight(380);
-    setStyleSheet("QDialog { background: #1e1e1e; color: white; }");
+    setStyleSheet("QDialog { background: #121212; color: white; }");
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 12, 12, 12);
@@ -44,7 +44,7 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     m_presetCombo->setStyleSheet(
         "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; min-width: 100px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
 
     QPushButton *resetBtn = new QPushButton("Reset");
     resetBtn->setStyleSheet(

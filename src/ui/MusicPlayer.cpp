@@ -50,6 +50,65 @@ constexpr int kGlobalMetadataPreloadBatchDelayMs = 250;
 const char *kSeekDiagBuildMarker = "seek-fix-2026-04-14-r3";
 }
 
+class CornerGlowWidget : public QWidget {
+public:
+    explicit CornerGlowWidget(QWidget *parent = nullptr) : QWidget(parent) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_colorAnim = new QVariantAnimation(this);
+        m_colorAnim->setDuration(1200);
+        m_colorAnim->setEasingCurve(QEasingCurve::InOutCubic);
+        connect(m_colorAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            m_currentColor = v.value<QColor>();
+            update();
+        });
+        m_currentColor = QColor(40, 40, 40, 0);
+    }
+
+    void setColor(const QColor &c) {
+        QColor target = c;
+        if (target == Qt::transparent) target = QColor(40, 40, 40, 0);
+        if (m_currentColor == target) return;
+        m_colorAnim->stop();
+        m_colorAnim->setStartValue(m_currentColor);
+        m_colorAnim->setEndValue(target);
+        m_colorAnim->start();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        if (m_currentColor.alpha() == 0 && m_currentColor.value() < 10) return;
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        
+        // Very large, soft radial glow from bottom-left
+        qreal radius = std::sqrt(width()*width() + height()*height());
+        QRadialGradient g(0, height(), radius);
+        
+        QColor c = m_currentColor;
+        // Moderate vibrancy for background use
+        c.setAlpha(80); 
+        g.setColorAt(0, c);
+        g.setColorAt(0.2, c);
+        c.setAlpha(0);
+        g.setColorAt(0.8, c);
+        g.setColorAt(1.0, Qt::transparent);
+        
+        p.fillRect(rect(), g);
+    }
+
+private:
+    QColor m_currentColor = Qt::transparent;
+    QVariantAnimation *m_colorAnim;
+};
+
+QColor extractDominantColor(const QPixmap &pixmap) {
+    if (pixmap.isNull()) return Qt::transparent;
+    // Scale to 1x1 to get the average/dominant color efficiently
+    QImage img = pixmap.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).toImage();
+    return img.pixelColor(0, 0);
+}
+
 QString normalizePathForCompare(const QString &path)
 {
 #ifdef Q_OS_WIN
@@ -336,7 +395,7 @@ void MusicPlayer::setupUI()
     // --- LEFT: Playlist sidebar ---
     QWidget *sidebarWidget = new QWidget();
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: #2b2b2b; border: 2px solid #555; border-radius: 5px; }");
+        "QWidget#sidebarPanel { background-color: #1a1a1a; border: 2px solid #555; border-radius: 5px; }");
     sidebarWidget->setObjectName("sidebarPanel");
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebarWidget);
     sidebarLayout->setContentsMargins(8, 10, 8, 10);
@@ -348,7 +407,7 @@ void MusicPlayer::setupUI()
 
     m_playlistList = new NoXButtonListWidget();
     m_playlistList->setStyleSheet(
-        "QListWidget { background: #2b2b2b; border: none; color: white; font-size: 13px; outline: none; }"
+        "QListWidget { background: #1a1a1a; border: none; color: white; font-size: 13px; outline: none; }"
         "QListWidget::item { padding: 8px 8px 8px 12px; border-radius: 4px; background: transparent; border-left: 3px solid transparent; }"
         "QListWidget::item:selected { background: #3d3d3d; color: #1db954; font-weight: bold; border-left: 3px solid #1db954; }"
         "QListWidget::item:hover:!selected { background: #3a3a3a; }");
@@ -542,6 +601,7 @@ void MusicPlayer::setupUI()
 
     QWidget *leftWidget = new QWidget();
     leftWidget->setLayout(leftSection);
+    leftWidget->setStyleSheet("background: transparent;");
 
     // CENTER section
     QHBoxLayout *centerSection = new QHBoxLayout();
@@ -580,6 +640,7 @@ void MusicPlayer::setupUI()
 
     QWidget *centerWidget = new QWidget();
     centerWidget->setLayout(centerSection);
+    centerWidget->setStyleSheet("background: transparent;");
 
     // RIGHT section
     QHBoxLayout *rightSection = new QHBoxLayout();
@@ -593,7 +654,7 @@ void MusicPlayer::setupUI()
     m_volumeLabel->installEventFilter(this);
 
     QString sliderStyle =
-        "QSlider { min-height: 16px; }"
+        "QSlider { min-height: 16px; background: transparent; }"
         "QSlider::groove:horizontal { height: 4px; background: #4d4d4d; border-radius: 2px; }"
         "QSlider::sub-page:horizontal { background: #b3b3b3; border-radius: 2px; }"
         "QSlider::handle:horizontal { background: #fff; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }"
@@ -611,6 +672,7 @@ void MusicPlayer::setupUI()
 
     QWidget *rightWidget = new QWidget();
     rightWidget->setLayout(rightSection);
+    rightWidget->setStyleSheet("background: transparent;");
 
     controlsRow->addWidget(leftWidget, 1);
     controlsRow->addWidget(centerWidget, 0);
@@ -646,7 +708,16 @@ void MusicPlayer::setupUI()
 
     mainLayout->addWidget(bottomBar);
 
-    centralWidget->setStyleSheet("background-color: #1e1e1e;");
+    m_bottomGlow = new CornerGlowWidget(centralWidget);
+    m_bottomGlow->resize(800, 600); // Larger glow area
+    m_bottomGlow->lower(); // Move behind all other widgets
+
+    // Adjust styles to be slightly transparent so the glow is visible from behind
+    centralWidget->setStyleSheet("background-color: #121212;");
+    sidebarWidget->setStyleSheet(
+        "QWidget#sidebarPanel { background-color: rgba(26, 26, 26, 200); border: 2px solid #333; border-radius: 5px; }");
+    bottomBar->setStyleSheet("background-color: transparent;");
+    
     setCentralWidget(centralWidget);
 }
 
@@ -2137,6 +2208,9 @@ void MusicPlayer::dragEnterEvent(QDragEnterEvent *event) { if (event->mimeData()
 void MusicPlayer::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
+    if (m_bottomGlow) {
+        m_bottomGlow->move(0, centralWidget()->height() - m_bottomGlow->height());
+    }
     if (m_fullscreenPlayer)
         m_fullscreenPlayer->setGeometry(rect());
 }
@@ -4402,8 +4476,14 @@ void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)
     m_artistLabel->setText(md.artist);
 
     const QPixmap cover = md.coverPixmap();
-    if (!cover.isNull())
+    if (!cover.isNull()) {
         m_bottomCoverLabel->setPixmap(cover.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (m_bottomGlow) {
+            m_bottomGlow->setColor(extractDominantColor(cover));
+        }
+    } else {
+        if (m_bottomGlow) m_bottomGlow->setColor(Qt::transparent);
+    }
 
     if (m_fullscreenPlayer) {
         m_fullscreenPlayer->updateTrack(cover, title, md.artist, md.album,

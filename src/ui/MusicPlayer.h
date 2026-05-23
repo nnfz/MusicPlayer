@@ -48,6 +48,8 @@ protected:
     }
 };
 
+class CornerGlowWidget;
+
 class MusicPlayer : public QMainWindow
 {
     Q_OBJECT
@@ -268,6 +270,7 @@ private:
     Equalizer *m_equalizer = nullptr;
     SettingsDialog *m_settingsDialog = nullptr;
     FullscreenPlayer *m_fullscreenPlayer = nullptr;
+    CornerGlowWidget *m_bottomGlow = nullptr;
 
     #ifdef Q_OS_WIN
         WinTaskbarButtons *m_winTaskbar = nullptr;

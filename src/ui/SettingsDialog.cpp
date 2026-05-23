@@ -23,7 +23,7 @@ SettingsDialog::SettingsDialog(Equalizer *eq, GaplessAudioEngine *engine,
     setWindowTitle("Settings");
     setMinimumSize(700, 480);
     resize(720, 500);
-    setStyleSheet("QDialog { background: #1e1e1e; color: white; }");
+    setStyleSheet("QDialog { background: #121212; color: white; }");
 
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
     mainLayout->setSpacing(0);
@@ -32,7 +32,7 @@ SettingsDialog::SettingsDialog(Equalizer *eq, GaplessAudioEngine *engine,
     m_categoryList = new QListWidget();
     m_categoryList->setFixedWidth(160);
     m_categoryList->setStyleSheet(
-        "QListWidget { background: #252525; border: none; color: white; font-size: 13px; outline: none; }"
+        "QListWidget { background: #181818; border: none; color: white; font-size: 13px; outline: none; }"
         "QListWidget::item { padding: 10px 14px; }"
         "QListWidget::item:selected { background: #333; font-weight: bold; }"
         "QListWidget::item:hover { background: #2e2e2e; }");
@@ -83,7 +83,7 @@ void SettingsDialog::buildAppearancePage()
 
     QFrame *sep = new QFrame();
     sep->setFrameShape(QFrame::HLine);
-    sep->setStyleSheet("color: #3d3d3d;");
+    sep->setStyleSheet("color: #282828;");
     layout->addWidget(sep);
 
     QHBoxLayout *rowHeightRow = new QHBoxLayout();
@@ -104,7 +104,7 @@ void SettingsDialog::buildAppearancePage()
 
     QFrame *sep2 = new QFrame();
     sep2->setFrameShape(QFrame::HLine);
-    sep2->setStyleSheet("color: #3d3d3d;");
+    sep2->setStyleSheet("color: #282828;");
     layout->addWidget(sep2);
 
     QHBoxLayout *cacheRow = new QHBoxLayout();
@@ -156,7 +156,7 @@ void SettingsDialog::buildAudioPage()
     m_decoderCombo->setStyleSheet(
         "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
     m_decoderCombo->addItem("FFmpeg Decoder (custom)", GaplessAudioEngine::decoderFfmpegId());
     decoderRow->addWidget(decoderTitle);
     decoderRow->addStretch();
