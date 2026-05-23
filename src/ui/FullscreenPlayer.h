@@ -74,13 +74,14 @@ private:
 class FullscreenPlayer : public QWidget
 {
     Q_OBJECT
+    Q_PROPERTY(qreal animationSpeed READ animationSpeed WRITE setAnimationSpeed)
 
 public:
     explicit FullscreenPlayer(QWidget *parent = nullptr);
+    ~FullscreenPlayer() override;
 
-    void openFor(const QPixmap &cover, const QString &title, const QString &artist,
+    void openFor(const QPixmap &cover, const QString &title, const QString &artist, 
                  const QString &album, int durationMs, int positionMs, bool isPlaying, int volume);
-
     void updateTrack(const QPixmap &cover, const QString &title,
                      const QString &artist, const QString &album, int durationMs);
     void updatePosition(int ms);
@@ -90,6 +91,9 @@ public:
     void updateShuffleState(bool enabled, int mode);
     void updateRepeatState(int mode);
     void updateBassLevel(float level);
+
+    qreal animationSpeed() const { return m_animationSpeed; }
+    void setAnimationSpeed(qreal s) { m_animationSpeed = s; }
 
     bool isOpen() const { return m_isOpen; }
 
@@ -174,6 +178,8 @@ private:
     QTimer                *m_animTimer    { nullptr };
     QParallelAnimationGroup *m_closeAnim  { nullptr };
     QVariantAnimation     *m_bgFadeAnim   { nullptr };
+    QVariantAnimation     *m_paletteTransitionAnim { nullptr };
+    QVariantAnimation     *m_speedPulseAnim { nullptr };
 
     QPixmap                m_rawCover;
     int                    m_durationMs   { 0 };
@@ -212,6 +218,8 @@ private:
     bool                   m_positionAnchorPlaying { false };
 
     QVector<QColor>        m_palette;
+    QVector<QColor>        m_prevPalette;
     QImage                 m_noiseFrame;
     float                  m_phase        { 0.f };
+    qreal                  m_animationSpeed { 1.0 };
 };

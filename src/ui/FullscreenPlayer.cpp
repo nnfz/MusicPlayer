@@ -17,6 +17,8 @@
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
+#include <QOpenGLTexture>
+#include <QOpenGLBuffer>
 #include <QVector>
 #include <QListWidget>
 #include <QScrollBar>
@@ -346,21 +348,46 @@ public:
         setFocusPolicy(Qt::NoFocus);
     }
 
+    ~FullscreenBackgroundGL()
+    {
+        makeCurrent();
+        doneCurrent();
+    }
+
     void setPalette(const QVector<QColor> &colors)
     {
+        if (m_palette == colors) return;
+        m_prevPalette = m_palette;
         m_palette = colors;
+        m_progress = 0.0f;
+        update();
+    }
+
+    void setPaletteInstant(const QVector<QColor> &colors)
+    {
+        m_palette = colors;
+        m_prevPalette = colors;
+        m_progress = 1.0f;
+        update();
+    }
+
+    void setPaletteTransition(float progress)
+    {
+        m_progress = progress;
+        update();
+    }
+
+    void setCover(const QPixmap &pixmap)
+    {
+        Q_UNUSED(pixmap)
+        // For the new pure-liquid shader, we don't need a blurred texture.
+        // We just need the palette, which is already handled by setPalette.
         update();
     }
 
     void setTime(float t)
     {
         m_time = t;
-        update();
-    }
-
-    void setBeat(float b)
-    {
-        m_beat = b;
         update();
     }
 
@@ -371,59 +398,88 @@ protected:
 
         static const char *kVert =
             "#version 330 core\n"
+            "layout(location = 0) in vec2 a_pos;\n"
             "out vec2 v_uv;\n"
-            "const vec2 verts[4] = vec2[](\n"
-            "  vec2(-1.0, -1.0),\n"
-            "  vec2( 1.0, -1.0),\n"
-            "  vec2(-1.0,  1.0),\n"
-            "  vec2( 1.0,  1.0));\n"
             "void main() {\n"
-            "  vec2 pos = verts[gl_VertexID];\n"
-            "  v_uv = pos * 0.5 + 0.5;\n"
-            "  gl_Position = vec4(pos, 0.0, 1.0);\n"
+            "  v_uv = a_pos * 0.5 + 0.5;\n"
+            "  gl_Position = vec4(a_pos, 0.0, 1.0);\n"
             "}\n";
 
         static const char *kFrag =
             "#version 330 core\n"
             "in vec2 v_uv;\n"
             "out vec4 fragColor;\n"
+            "uniform float u_time;\n"
             "uniform vec3 u_color0;\n"
             "uniform vec3 u_color1;\n"
             "uniform vec3 u_color2;\n"
-            "uniform float u_time;\n"
-            "uniform float u_beat;\n"
-            "float hash(vec2 p) {\n"
-            "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
+            "\n"
+            "vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }\n"
+            "vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }\n"
+            "vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }\n"
+            "\n"
+            "float snoise(vec2 v) {\n"
+            "  const vec4 C = vec4(0.211324865405187, 0.366025403784439,\n"
+            "                      -0.577350269189626, 0.024390243902439);\n"
+            "  vec2 i  = floor(v + dot(v, C.yy));\n"
+            "  vec2 x0 = v - i + dot(i, C.xx);\n"
+            "  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);\n"
+            "  vec4 x12 = x0.xyxy + C.xxzz;\n"
+            "  x12.xy -= i1;\n"
+            "  i = mod289(i);\n"
+            "  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));\n"
+            "  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);\n"
+            "  m = m*m; m = m*m;\n"
+            "  vec3 x = 2.0 * fract(p * C.www) - 1.0;\n"
+            "  vec3 h = abs(x) - 0.5;\n"
+            "  vec3 ox = floor(x + 0.5);\n"
+            "  vec3 a0 = x - ox;\n"
+            "  m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);\n"
+            "  vec3 g;\n"
+            "  g.x = a0.x * x0.x + h.x * x0.y;\n"
+            "  g.yz = a0.yz * x12.xz + h.yz * x12.yw;\n"
+            "  return 130.0 * dot(m, g);\n"
             "}\n"
-            "float noise(vec2 p) {\n"
-            "  vec2 i = floor(p);\n"
-            "  vec2 f = fract(p);\n"
-            "  float a = hash(i);\n"
-            "  float b = hash(i + vec2(1.0, 0.0));\n"
-            "  float c = hash(i + vec2(0.0, 1.0));\n"
-            "  float d = hash(i + vec2(1.0, 1.0));\n"
-            "  vec2 u = f * f * (3.0 - 2.0 * f);\n"
-            "  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;\n"
-            "}\n"
+            "\n"
             "void main() {\n"
-            "  vec2 p = v_uv * 1.5;\n"
-            "  float t = u_time * 0.12;\n"
-            "  float n0 = noise(p + vec2(t * 0.8, t));\n"
-            "  float n1 = noise(p * 1.3 + vec2(-t, t * 1.1) + 5.2);\n"
-            "  float n2 = noise(p * 0.7 + vec2(t * 1.2, -t * 0.9) + 8.7);\n"
-            "  float w0 = pow(n0, 4.0);\n"
-            "  float w1 = pow(n1, 4.0);\n"
-            "  float w2 = pow(n2, 4.0);\n"
-            "  float sum = w0 + w1 + w2;\n"
-            "  if (sum < 0.001) { w0 = 1.0; sum = 1.0; }\n"
-            "  vec3 col = (u_color0 * w0 + u_color1 * w1 + u_color2 * w2) / sum;\n"
-            "  float dither = (hash(v_uv + fract(u_time)) - 0.5) / 128.0;\n"
-            "  fragColor = vec4(col * 0.6 + dither, 1.0);\n"
+            "  vec2 uv = v_uv;\n"
+            "  float t = u_time * 0.1;\n"
+            "\n"
+            "  // Use domain warping to generate the liquid pattern\n"
+            "  vec2 p = uv * 1.2;\n"
+            "  \n"
+            "  float n1 = snoise(p + vec2(t * 0.5, t * 0.3));\n"
+            "  float n2 = snoise(p * 1.5 + vec2(n1, n1) + vec2(-t * 0.4, t * 0.6));\n"
+            "  float n3 = snoise(p * 0.8 + vec2(n2, n1) + vec2(t * 0.3, -t * 0.2));\n"
+            "  \n"
+            "  // Map the noise to our 3 dominant colors\n"
+            "  float weight1 = smoothstep(-0.6, 0.6, n2);\n"
+            "  float weight2 = smoothstep(-0.5, 0.5, n3);\n"
+            "  \n"
+            "  vec3 liquid = mix(u_color0, u_color1, weight1);\n"
+            "  liquid = mix(liquid, u_color2, weight2);\n"
+            "  \n"
+            "  // Add some internal flow highlight\n"
+            "  liquid += (n2 * 0.05);\n"
+            "  \n"
+            "  // Final processing\n"
+            "  liquid *= 0.6; // Darken for UI\n"
+            "  \n"
+            "  // Vignette\n"
+            "  float d = length(uv - 0.5);\n"
+            "  liquid *= smoothstep(1.2, 0.4, d);\n"
+            "\n"
+            "  fragColor = vec4(liquid, 1.0);\n"
             "}\n";
 
         m_program.addShaderFromSourceCode(QOpenGLShader::Vertex, kVert);
         m_program.addShaderFromSourceCode(QOpenGLShader::Fragment, kFrag);
         m_program.link();
+
+        float verts[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+        m_vbo.create();
+        m_vbo.bind();
+        m_vbo.allocate(verts, sizeof(verts));
     }
 
     void paintGL() override
@@ -435,25 +491,36 @@ protected:
         if (!m_program.isLinked())
             return;
 
-        QVector<QColor> colors = m_palette;
-        if (colors.size() < 3)
-            colors = { QColor(180, 60, 80), QColor(60, 80, 180), QColor(80, 160, 120) };
-
         m_program.bind();
         m_program.setUniformValue("u_time", m_time);
-        m_program.setUniformValue("u_beat", m_beat);
-        m_program.setUniformValue("u_color0", colors[0].redF(), colors[0].greenF(), colors[0].blueF());
-        m_program.setUniformValue("u_color1", colors[1].redF(), colors[1].greenF(), colors[1].blueF());
-        m_program.setUniformValue("u_color2", colors[2].redF(), colors[2].greenF(), colors[2].blueF());
+
+        QVector<QColor> colors = m_palette;
+        if (colors.size() < 3) colors = { QColor(180, 60, 80), QColor(60, 80, 180), QColor(80, 160, 120) };
+        
+        QVector<QColor> prevColors = m_prevPalette;
+        if (prevColors.size() < 3) prevColors = colors;
+
+        for (int i = 0; i < 3; ++i) {
+            float r = prevColors[i].redF()   + (colors[i].redF()   - prevColors[i].redF())   * m_progress;
+            float g = prevColors[i].greenF() + (colors[i].greenF() - prevColors[i].greenF()) * m_progress;
+            float b = prevColors[i].blueF()  + (colors[i].blueF()  - prevColors[i].blueF())  * m_progress;
+            m_program.setUniformValue(QString("u_color%1").arg(i).toLatin1().constData(), r, g, b);
+        }
+
+        m_vbo.bind();
+        m_program.enableAttributeArray(0);
+        m_program.setAttributeBuffer(0, GL_FLOAT, 0, 2);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         m_program.release();
     }
 
 private:
     QOpenGLShaderProgram m_program;
+    QOpenGLBuffer m_vbo;
     QVector<QColor> m_palette;
+    QVector<QColor> m_prevPalette;
+    float m_progress = 1.0f;
     float m_time = 0.0f;
-    float m_beat = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -723,6 +790,37 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     });
     lyricsLayout->addWidget(m_lyricsList, 1);
 
+    m_paletteTransitionAnim = new QVariantAnimation(this);
+    m_paletteTransitionAnim->setDuration(1200);
+    m_paletteTransitionAnim->setStartValue(0.0);
+    m_paletteTransitionAnim->setEndValue(1.0);
+    m_paletteTransitionAnim->setEasingCurve(QEasingCurve::InOutCubic);
+    connect(m_paletteTransitionAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        if (m_bgWidget) m_bgWidget->setPaletteTransition(v.toFloat());
+    });
+
+    m_speedPulseAnim = new QVariantAnimation(this);
+    m_speedPulseAnim->setDuration(800);
+    m_speedPulseAnim->setStartValue(0.0);
+    m_speedPulseAnim->setEndValue(1.0);
+    m_speedPulseAnim->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_speedPulseAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        float progress = v.toFloat();
+        // Sine-like speed pulse: fast at start, slow at end
+        float pulse = std::sin(progress * 3.14159f);
+        m_animationSpeed = 1.0 + 4.0 * pulse;
+    });
+    connect(m_speedPulseAnim, &QVariantAnimation::finished, this, [this] {
+        m_animationSpeed = 1.0;
+    });
+
+    // Tie palette transition to a speed pulse as well
+    connect(m_paletteTransitionAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        float progress = v.toFloat();
+        float pulse = std::sin(progress * 3.14159f);
+        m_animationSpeed = 1.0 + 4.0 * pulse;
+    });
+
     connect(m_lyricsList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         const int row = m_lyricsList->row(item);
         if (row < 0 || row >= m_lyricsSyncedTimes.size())
@@ -762,6 +860,11 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     root->setSpacing(0);
     root->addWidget(m_mainPanel);
     root->addWidget(m_lyricsPanel);
+}
+
+FullscreenPlayer::~FullscreenPlayer()
+{
+    if (m_animTimer) m_animTimer->stop();
 }
 
 // ---------------------------------------------------------------------------
@@ -805,8 +908,14 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     }
 
     extractPalette(m_rawCover);
-    if (m_bgWidget)
-        m_bgWidget->setPalette(m_palette);
+    if (m_bgWidget) {
+        m_bgWidget->setPaletteInstant(m_palette);
+        if (m_speedPulseAnim) {
+            m_speedPulseAnim->stop();
+            m_speedPulseAnim->start();
+        }
+        m_bgWidget->setCover(m_rawCover);
+    }
 
     setGeometry(parentWidget()->rect());
     raise(); show();
@@ -852,6 +961,11 @@ void FullscreenPlayer::closeOverlay()
     setLyricsVisible(false, false);
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
 
+    if (m_speedPulseAnim) {
+        m_speedPulseAnim->stop();
+        m_speedPulseAnim->start();
+    }
+
     if (m_cardOpacity) m_cardOpacity->setEnabled(true);
 
     m_closeAnim = new QParallelAnimationGroup(this);
@@ -892,8 +1006,14 @@ void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title,
     layoutCard();
     if (isVisible()) {
         extractPalette(m_rawCover);
-        if (m_bgWidget)
+        if (m_bgWidget) {
             m_bgWidget->setPalette(m_palette);
+            if (m_paletteTransitionAnim) {
+                m_paletteTransitionAnim->stop();
+                m_paletteTransitionAnim->start();
+            }
+            m_bgWidget->setCover(m_rawCover);
+        }
     }
     if (m_isOpen)
         requestLyrics();
@@ -1762,7 +1882,7 @@ void FullscreenPlayer::updateBassLevel(float level)
 
 void FullscreenPlayer::animateTick()
 {
-    m_phase += 0.015f;
+    m_phase += 0.015f * m_animationSpeed; 
     if (m_bgWidget)
         m_bgWidget->setTime(m_phase);
     maybeResumeLyricsAutoScroll();
@@ -1804,4 +1924,3 @@ void FullscreenPlayer::updateCoverWidget()
     m_coverLabel->setPixmap(rounded(px, 24));
     m_coverLabel->setFixedSize(px.size());
 }
-
