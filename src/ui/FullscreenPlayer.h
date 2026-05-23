@@ -166,7 +166,6 @@ private:
     QPushButton           *m_muteBtn      { nullptr };
     ClickableSlider       *m_volumeSlider { nullptr };
     QListWidget           *m_lyricsList   { nullptr };
-    QGraphicsOpacityEffect *m_lyricsOpacity { nullptr };
     QPropertyAnimation    *m_lyricsScrollAnim { nullptr };
     QVariantAnimation     *m_lyricsHighlightAnim { nullptr };
     LyricsItemDelegate    *m_lyricsDelegate { nullptr };

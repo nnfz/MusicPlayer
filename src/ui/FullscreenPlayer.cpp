@@ -553,17 +553,6 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsPanel->setMinimumWidth(0);
     m_lyricsPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     m_lyricsPanel->setStyleSheet("background:transparent;");
-    m_lyricsOpacity = new QGraphicsOpacityEffect(m_lyricsPanel);
-    m_lyricsOpacity->setOpacity(0.0);
-    m_lyricsPanel->setGraphicsEffect(m_lyricsOpacity);
-    // Nesting QGraphicsOpacityEffect inside another (m_cardOpacity already
-    // wraps m_card, which contains m_lyricsPanel) makes Qt re-enter paint on
-    // the same offscreen device — visible in the console as
-    // "QPainter::begin: A paint device can only be painted by one painter at
-    // a time" plus "Painter not active" follow-ups. We disable the inner
-    // effect except while the lyrics show/hide animation is actively running,
-    // so steady-state painting goes through a single effect pipeline.
-    m_lyricsOpacity->setEnabled(false);
 
     m_bgWidget = new FullscreenBackgroundGL(this);
     m_bgWidget->setGeometry(rect());
@@ -844,6 +833,10 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     pa->setDuration(450); pa->setEasingCurve(QEasingCurve::OutQuint);
     group->addAnimation(pa);
 
+    connect(group, &QParallelAnimationGroup::finished, this, [this] {
+        if (m_cardOpacity) m_cardOpacity->setEnabled(false);
+    });
+
     group->start(QAbstractAnimation::DeleteWhenStopped);
     m_animTimer->start();
     m_isOpen = true;
@@ -858,6 +851,8 @@ void FullscreenPlayer::closeOverlay()
     releaseKeyboard();
     setLyricsVisible(false, false);
     if (m_closeAnim) { m_closeAnim->stop(); delete m_closeAnim; m_closeAnim = nullptr; }
+
+    if (m_cardOpacity) m_cardOpacity->setEnabled(true);
 
     m_closeAnim = new QParallelAnimationGroup(this);
     
@@ -1395,22 +1390,15 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
 
     m_lyricsVisible = visible;
     const int targetWidth = visible ? kLyricsPanelWidth : 0;
-    const double targetOpacity = visible ? 1.0 : 0.0;
 
     if (m_card)
         m_card->adjustSize();
 
-    if (!animate || !m_lyricsPanel || !m_lyricsOpacity) {
+    if (!animate || !m_lyricsPanel) {
         if (m_lyricsPanel)
             m_lyricsPanel->setMinimumWidth(targetWidth);
         if (m_lyricsPanel)
             m_lyricsPanel->setMaximumWidth(targetWidth);
-        if (m_lyricsOpacity) {
-            m_lyricsOpacity->setOpacity(targetOpacity);
-            // No animation in flight, so the nested effect can stay disabled
-            // — m_cardOpacity already covers the whole card.
-            m_lyricsOpacity->setEnabled(false);
-        }
         if (m_card) {
             const int cardHeight = m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height();
             m_card->resize(kCardWidth + targetWidth, cardHeight);
@@ -1421,12 +1409,6 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
             animateLyricsScrollTo(m_lyricsCurrentIndex);
         return;
     }
-
-    // Enable the inner opacity effect ONLY while the fade animation runs.
-    // Steady state keeps it disabled to avoid nested QGraphicsEffect
-    // re-entrancy warnings ("paint device can only be painted by one painter
-    // at a time" + "Painter not active").
-    m_lyricsOpacity->setEnabled(true);
 
     auto *group = new QParallelAnimationGroup(this);
 
@@ -1444,13 +1426,6 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
     maxWidthAnim->setEasingCurve(QEasingCurve::OutCubic);
     group->addAnimation(maxWidthAnim);
 
-    auto *fadeAnim = new QPropertyAnimation(m_lyricsOpacity, "opacity", group);
-    fadeAnim->setStartValue(m_lyricsOpacity->opacity());
-    fadeAnim->setEndValue(targetOpacity);
-    fadeAnim->setDuration(260);
-    fadeAnim->setEasingCurve(QEasingCurve::OutCubic);
-    group->addAnimation(fadeAnim);
-
     const int cardHeight = m_card->height() > 0 ? m_card->height() : m_card->sizeHint().height();
     const QPoint targetPos = cardPosForWidth(kCardWidth + targetWidth);
     const QRect targetGeom(targetPos, QSize(kCardWidth + targetWidth, cardHeight));
@@ -1466,18 +1441,9 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
             m_lyricsPanel->setMinimumWidth(targetWidth);
             m_lyricsPanel->setMaximumWidth(targetWidth);
         }
-        // Animation is done — turn the inner opacity effect off again so the
-        // ongoing per-frame repaints (60Hz lyric interpolation) don't re-enter
-        // the nested-effect paint pipeline.
-        if (m_lyricsOpacity)
-            m_lyricsOpacity->setEnabled(false);
         if (m_lyricsList)
             m_lyricsList->doItemsLayout();
         if (visible && m_lyricsSyncedAvailable) {
-            // When opening the panel mid-playback, m_lyricsCurrentIndex may
-            // still be -1 (no highlight tick has fired yet). Force a fresh
-            // lookup from the current audio position so the panel snaps to
-            // the right line instead of starting at the top.
             updateLyricsHighlight(m_lastPositionMs);
             animateLyricsScrollTo(m_lyricsCurrentIndex, true, true);
         }
