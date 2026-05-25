@@ -2057,24 +2057,27 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_bottomCoverLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
         if (me->button() == Qt::LeftButton) {
-            TrackItem *track = (m_currentIndex >= 0 && m_currentIndex < m_tracks.count())
-                               ? m_tracks[m_currentIndex] : nullptr;
+            bool hasTrack = !m_playbackMetadata.filePath.isEmpty();
+            const TrackMetadata &md = m_playbackMetadata;
+
             QPixmap cover;
             QString title  = "No track playing";
             QString artist;
             QString album;
             int     dur    = 0;
-            if (track) {
-                cover  = track->metadata().coverPixmap();
-                title  = track->metadata().title.isEmpty()
-                         ? QFileInfo(track->filePath()).baseName()
-                         : track->metadata().title;
-                artist = track->metadata().artist;
-                album  = track->metadata().album;
-                dur    = static_cast<int>(track->metadata().duration);
+
+            if (hasTrack) {
+                cover  = md.coverPixmap();
+                title  = md.title.isEmpty()
+                         ? QFileInfo(md.filePath).baseName()
+                         : md.title;
+                artist = md.artist;
+                album  = md.album;
+                dur    = static_cast<int>(md.duration);
             }
+
             bool playing = m_engine && m_engine->state() == GaplessAudioEngine::Playing;
-            int  pos     = m_engine ? static_cast<int>(m_engine->position()) : 0;
+            int  pos     = m_positionSlider->value();
             int  vol     = m_volumeSlider->value();
 
             m_fullscreenPlayer->setGeometry(rect());
@@ -4478,7 +4481,11 @@ void MusicPlayer::updateTrackRow(int trackIndex)
 void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)
 {
     if (!track) return;
-    const TrackMetadata &md = track->metadata();
+    m_playbackMetadata = track->metadata();
+    const TrackMetadata &md = m_playbackMetadata;
+
+    m_activeIsCue = md.isCueTrack;
+    m_activeCueStartMs = md.cueStartMs;
 
     const QString title = md.title.isEmpty() ? QFileInfo(track->filePath()).baseName() : md.title;
     m_titleLabel->setText(title);

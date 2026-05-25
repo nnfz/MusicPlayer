@@ -20,7 +20,6 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QUrl;
 class QListWidget;
-class QPropertyAnimation;
 class QScrollBar;
 class QVariantAnimation;
 class LyricsItemDelegate;
@@ -74,7 +73,10 @@ private:
 class FullscreenPlayer : public QWidget
 {
     Q_OBJECT
-    Q_PROPERTY(qreal animationSpeed READ animationSpeed WRITE setAnimationSpeed)
+    Q_PROPERTY(qreal mainUiOpacity READ mainUiOpacity WRITE setMainUiOpacity)
+    Q_PROPERTY(QPointF centerOffset READ centerOffset WRITE setCenterOffset)
+    Q_PROPERTY(qreal controlsOpacity READ controlsOpacity WRITE setControlsOpacity)
+    Q_PROPERTY(qreal lyricsPanelX READ lyricsPanelX WRITE setLyricsPanelX)
 
 public:
     explicit FullscreenPlayer(QWidget *parent = nullptr);
@@ -94,6 +96,18 @@ public:
 
     qreal animationSpeed() const { return m_animationSpeed; }
     void setAnimationSpeed(qreal s) { m_animationSpeed = s; }
+
+    QPointF centerOffset() const { return m_centerOffset; }
+    void setCenterOffset(const QPointF &off) { m_centerOffset = off; updateLayout(); }
+
+    qreal controlsOpacity() const { return m_controlsOpacity; }
+    void setControlsOpacity(qreal v);
+    
+    qreal lyricsPanelX() const { return m_lyricsPanelX; }
+    void setLyricsPanelX(qreal x) { m_lyricsPanelX = x; updateLayout(); }
+
+    qreal mainUiOpacity() const { return m_mainUiOpacity; }
+    void setMainUiOpacity(qreal v);
 
     bool isOpen() const { return m_isOpen; }
 
@@ -116,16 +130,18 @@ protected:
     void        paintEvent(QPaintEvent *) override;
     void        keyPressEvent(QKeyEvent *e) override;
     void        resizeEvent(QResizeEvent *e) override;
+    void        mouseMoveEvent(QMouseEvent *e) override;
+    void        leaveEvent(QEvent *e) override;
 
 private slots:
     void animateTick();
     void toggleLyrics();
     void onLyricsReplyFinished();
+    void updateLayout();
 
 private:
     void extractPalette(const QPixmap &albumArt);
     void updateNoiseFrame();
-    void layoutCard();
     void updateCoverWidget();
     void requestLyrics();
     void sendLyricsRequest(const QUrl &url);
@@ -139,19 +155,31 @@ private:
     void startLyricsHighlightAnimation(int prevIndex, int nextIndex);
     void animateLyricsScrollTo(int index, bool force = false, bool instant = false);
     int lyricsScrollTargetForIndex(int index) const;
-    QPoint cardPosForWidth(int cardWidth) const;
     void suspendLyricsAutoScroll();
     bool lyricsAutoScrollSuspended() const;
     void maybeResumeLyricsAutoScroll();
     bool hasLyrics() const;
+    
+    void updateState();
+    void showControls();
+    void hideControls();
 
     class FullscreenBackgroundGL;
 
-    QWidget               *m_card         { nullptr };
-    QWidget               *m_mainPanel    { nullptr };
+    QWidget               *m_rootLayout   { nullptr };
+    QWidget               *m_titleBar     { nullptr };
+    QWidget               *m_centerArea   { nullptr };
     QWidget               *m_lyricsPanel  { nullptr };
+    QWidget               *m_playbackControls { nullptr };
+    QWidget               *m_seekBarArea  { nullptr };
+    QPushButton           *m_lyricsHint   { nullptr };
+    
     FullscreenBackgroundGL *m_bgWidget    { nullptr };
-    QGraphicsOpacityEffect *m_cardOpacity  { nullptr };
+    QGraphicsOpacityEffect *m_centerAreaOpacityEffect { nullptr };
+    QGraphicsOpacityEffect *m_titleBarOpacityEffect { nullptr };
+    QGraphicsOpacityEffect *m_seekBarOpacityEffect { nullptr };
+    QGraphicsOpacityEffect *m_playbackControlsOpacityEffect { nullptr };
+    QGraphicsOpacityEffect *m_lyricsHintOpacityEffect { nullptr };
 
     QLabel                *m_coverLabel   { nullptr };
     MarqueeLabel          *m_titleLabel   { nullptr };
@@ -170,13 +198,29 @@ private:
     QPushButton           *m_muteBtn      { nullptr };
     ClickableSlider       *m_volumeSlider { nullptr };
     QListWidget           *m_lyricsList   { nullptr };
+    
     QPropertyAnimation    *m_lyricsScrollAnim { nullptr };
+    QVariantAnimation     *m_lyricsSlideAnim  { nullptr };
     QVariantAnimation     *m_lyricsHighlightAnim { nullptr };
     LyricsItemDelegate    *m_lyricsDelegate { nullptr };
+    
+    qreal                  m_lyricsPanelX     { 0.0 };
+    qreal                  m_mainUiOpacity    { 1.0 };
+
     bool                   m_lyricsVisible { false };
+    bool                   m_stateHinted { false };
+    bool                   m_stateLifted { false };
 
     QTimer                *m_animTimer    { nullptr };
-    QParallelAnimationGroup *m_closeAnim  { nullptr };
+    QTimer                *m_hideControlsTimer { nullptr };
+    
+    QVariantAnimation     *m_centerOffsetAnim { nullptr };
+    QVariantAnimation     *m_playbackControlsOpacityAnim { nullptr };
+    QPropertyAnimation    *m_playbackControlsSlideAnim { nullptr };
+    QPropertyAnimation    *m_lyricsHintOpacityAnim { nullptr };
+    QPropertyAnimation    *m_lyricsHintSlideAnim { nullptr };
+    QParallelAnimationGroup *m_openCloseAnim { nullptr };
+
     QVariantAnimation     *m_bgFadeAnim   { nullptr };
     QVariantAnimation     *m_paletteTransitionAnim { nullptr };
     QVariantAnimation     *m_speedPulseAnim { nullptr };
@@ -210,16 +254,15 @@ private:
     qreal                  m_lyricsHighlightProgress { 1.0 };
     qint64                 m_lyricsHoldUntilMs { 0 };
     bool                   m_lyricsAutoScrollSuppressed { false };
-    // Sub-frame interpolation: between 50ms engine position updates, we
-    // extrapolate the playback time at ~60Hz so lyric highlight transitions
-    // happen exactly on the beat instead of jittering to the next 50ms tick.
-    qint64                 m_positionAnchorWallMs { 0 };  // wall clock at last engine update
-    int                    m_positionAnchorAudioMs { 0 }; // audio time at last engine update
+
+    qint64                 m_positionAnchorWallMs { 0 };
+    int                    m_positionAnchorAudioMs { 0 };
     bool                   m_positionAnchorPlaying { false };
 
     QVector<QColor>        m_palette;
     QVector<QColor>        m_prevPalette;
-    QImage                 m_noiseFrame;
     float                  m_phase        { 0.f };
     qreal                  m_animationSpeed { 1.0 };
+    QPointF                m_centerOffset;
+    qreal                  m_controlsOpacity { 0.0 };
 };

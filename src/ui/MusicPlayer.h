@@ -217,6 +217,7 @@ private:
     QString m_currentPlaylistId;
     QString m_playbackPlaylistId;
     QString m_playbackTrackKey;
+    TrackMetadata m_playbackMetadata;
     QListWidget *m_playlistList = nullptr;
     QSplitter *m_splitter = nullptr;
 

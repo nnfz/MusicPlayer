@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: transparent; }
+
+    .player {
+        width: 100%;
+        min-height: 500px;
+        height: 100vh;
+        background: linear-gradient(135deg, #a06080 0%, #7a4060 30%, #9a6080 60%, #b07090 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px 28px;
+        position: relative;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        overflow: hidden;
+    }
+
+    .bg-blob {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(60px);
+        opacity: 0.4;
+        pointer-events: none;
+    }
+    .blob1 { width: 300px; height: 300px; background: #c090a0; top: -80px; left: -60px; }
+    .blob2 { width: 250px; height: 250px; background: #80405a; bottom: -60px; right: -40px; }
+    .blob3 { width: 200px; height: 200px; background: #d0a0b0; top: 50%; left: 60%; }
+
+    .titlebar {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: relative;
+        z-index: 10;
+    }
+    .titlebar-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: rgba(255,255,255,0.7);
+        font-size: 18px;
+        padding: 4px;
+        line-height: 1;
+    }
+    .titlebar-right { display: flex; gap: 16px; }
+
+    .main-content {
+        flex: 1;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        z-index: 2;
+    }
+
+    .center-area {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 24px;
+        will-change: transform;
+        transform: translateX(var(--cx, 0px)) translateY(var(--cy, 0px));
+        transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .cover {
+        width: 380px;
+        height: 380px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #e8c0d0, #b0d8f0, #c0e8d8);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        color: rgba(255,255,255,0.6);
+        overflow: hidden;
+    }
+    .cover img { width: 100%; height: 100%; object-fit: cover; }
+
+    .track-info { text-align: center; }
+    .track-title { font-size: 18px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
+    .track-artist { font-size: 14px; color: rgba(255,255,255,0.65); margin-top: 2px; }
+
+    .lyrics-hint {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        opacity: 0;
+        transition: opacity 0.3s ease;
+        cursor: pointer;
+        color: rgba(255,255,255,0.75);
+        padding: 8px;
+        z-index: 5;
+    }
+    .lyrics-hint.visible { opacity: 1; }
+
+    .lyrics-panel {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: var(--lp-bottom, 0px);
+        width: 52%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 0 0 0 40px;
+        opacity: 0;
+        will-change: transform, opacity, bottom;
+        transform: translateX(20px);
+        transition: opacity 0.45s ease, transform 0.45s ease, bottom 0.35s ease;
+        pointer-events: none;
+        overflow: hidden;
+        mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 75%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 75%, transparent 100%);
+    }
+    .lyrics-panel.open {
+        opacity: 1;
+        transform: translateX(0);
+        pointer-events: all;
+    }
+
+    .lyric-line {
+        font-size: 20px;
+        font-weight: 400;
+        color: rgba(255,255,255,0.38);
+        line-height: 1.6;
+        margin-bottom: 18px;
+        transition: color 0.3s, font-weight 0.3s;
+        cursor: default;
+    }
+    .lyric-line.active {
+        color: rgba(255,255,255,0.95);
+        font-weight: 700;
+        font-size: 23px;
+    }
+
+    .controls {
+        width: 100%;
+        position: relative;
+        z-index: 10;
+    }
+
+    .buttons {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+        opacity: 0;
+        transform: translateY(10px);
+        transition: opacity 0.35s ease, transform 0.35s ease;
+        pointer-events: none;
+        will-change: opacity, transform;
+    }
+
+    .cntr-btn { display: flex; align-items: center; justify-content: center; gap: 28px; }
+
+    .ctrl-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: rgba(255,255,255,0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        transition: color 0.15s, transform 0.1s;
+    }
+    .ctrl-btn:hover { color: #fff; transform: scale(1.1); }
+    .ctrl-btn:active { transform: scale(0.95); }
+    .ctrl-btn.play { width: 48px; height: 48px; color: #fff; }
+    .ctrl-btn svg { display: block; }
+
+    .left-btn, .right-btn { width: 120px; display: flex; align-items: center; }
+    .right-btn { justify-content: flex-end; }
+
+    .volume-row { display: flex; align-items: center; gap: 10px; }
+    .vol-icon { color: rgba(255,255,255,0.65); }
+    .vol-track { width: 80px; height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; cursor: pointer; }
+    .vol-fill { height: 100%; border-radius: 2px; background: rgba(255,255,255,0.85); pointer-events: none; }
+
+    .progress-area { display: flex; flex-direction: column; gap: 12px; }
+    .time { font-size: 12px; color: rgba(255,255,255,0.6); min-width: 32px; font-variant-numeric: tabular-nums; }
+    .time.end { text-align: right; }
+    .times { display: flex; justify-content: space-between; }
+    .progress-track { height: 6px; background: rgba(255,255,255,0.25); border-radius: 6px; cursor: pointer; }
+    .progress-fill { height: 100%; border-radius: 6px; background: rgba(255,255,255,0.9); pointer-events: none; }
+
+    .right-hover-zone {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 18%;
+        z-index: 4;
+        pointer-events: all;
+    }
+</style>
+</head>
+<body>
+<div class="player" id="player">
+    <div class="bg-blob blob1"></div>
+    <div class="bg-blob blob2"></div>
+    <div class="bg-blob blob3"></div>
+
+    <div class="right-hover-zone" id="right-hover-zone"></div>
+
+    <div class="titlebar">
+        <button class="titlebar-btn">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </button>
+        <div class="titlebar-right">
+            <button class="titlebar-btn">
+                <svg width="14" height="2" viewBox="0 0 14 2" fill="none"><rect width="14" height="2" rx="1" fill="currentColor"/></svg>
+            </button>
+            <button class="titlebar-btn">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="0.5" y="0.5" width="11" height="11" rx="1.5" stroke="currentColor"/></svg>
+            </button>
+            <button class="titlebar-btn">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="center-area" id="center-area">
+            <div class="cover" id="cover">
+                <img src="cover.png" alt="">
+            </div>
+            <div class="track-info">
+                <div class="track-title">Cloud99 (As Above Mix)</div>
+                <div class="track-artist">Machine Girl</div>
+            </div>
+        </div>
+
+        <div class="lyrics-hint" id="lyrics-hint">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <line x1="3" y1="12" x2="15" y2="12"/>
+                <line x1="3" y1="18" x2="18" y2="18"/>
+            </svg>
+        </div>
+
+        <div class="lyrics-panel" id="lyrics-panel">
+            <div class="lyric-line">Lookin' for somebody different 'cause</div>
+            <div class="lyric-line">my daddy was a pimp (Ooh, ooh, ooh)</div>
+            <div class="lyric-line">My mama had her issues but I miss her anyway</div>
+            <div class="lyric-line">Oh, babydoll (Ooh, ooh-ooh)</div>
+            <div class="lyric-line">Please don't call me for the wrong reasons</div>
+            <div class="lyric-line active">We both know exactly what I'm thinkin'</div>
+            <div class="lyric-line">Weeks pass and I never grow tired</div>
+            <div class="lyric-line">'Cause I never said never and I barely ever lie</div>
+            <div class="lyric-line">I'm on the road to an original place in outer space</div>
+            <div class="lyric-line">I didn't make it up, but you can't find it on a phone or a globe</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="buttons" id="buttons">
+            <div class="left-btn"></div>
+            <div class="cntr-btn">
+                <button class="ctrl-btn" id="btn-repeat" title="Repeat">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                        <path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                    </svg>
+                </button>
+                <button class="ctrl-btn" title="Previous">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                </button>
+                <button class="ctrl-btn play" id="btn-play" title="Play/Pause">
+                    <svg id="icon-play" width="44" height="44" viewBox="0 0 44 44" fill="none">
+                        <path d="M18 15l12 7-12 7V15z" fill="white"/>
+                    </svg>
+                    <svg id="icon-pause" width="44" height="44" viewBox="0 0 44 44" fill="none" style="display:none">
+                        <rect x="15" y="15" width="4" height="14" rx="1.5" fill="white"/>
+                        <rect x="25" y="15" width="4" height="14" rx="1.5" fill="white"/>
+                    </svg>
+                </button>
+                <button class="ctrl-btn" title="Next">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M18 6h-2v12h2zM6 18l8.5-6L6 6z"/></svg>
+                </button>
+                <button class="ctrl-btn" id="btn-shuffle" title="Shuffle">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+                        <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="right-btn">
+                <div class="volume-row">
+                    <svg class="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    </svg>
+                    <div class="vol-track" id="vol-track">
+                        <div class="vol-fill" id="vol-fill" style="width: 75%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="progress-area">
+            <div class="times">
+                <span class="time" id="cur-time">01:15</span>
+                <span class="time end">02:15</span>
+            </div>
+            <div class="progress-track" id="progress-track">
+                <div class="progress-fill" id="progress-fill" style="width: 52.4%"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let playing = false;
+    let volume = 75;
+    let totalSeconds = 135;
+    let curSeconds = Math.round(totalSeconds * 0.524);
+    let interval = null;
+    let hideTimer = null;
+    let lyricsOpen = false;
+
+    let stateLifted = false;
+    let stateHinted = false;
+
+    const player = document.getElementById('player');
+    const buttons = document.getElementById('buttons');
+    const centerArea = document.getElementById('center-area');
+    const lyricsPanel = document.getElementById('lyrics-panel');
+    const lyricsHint = document.getElementById('lyrics-hint');
+    const rightHoverZone = document.getElementById('right-hover-zone');
+    const btnPlay = document.getElementById('btn-play');
+    const iconPlay = document.getElementById('icon-play');
+    const iconPause = document.getElementById('icon-pause');
+    const progressFill = document.getElementById('progress-fill');
+    const curTime = document.getElementById('cur-time');
+    const volFill = document.getElementById('vol-fill');
+    const progressTrack = document.getElementById('progress-track');
+    const volTrack = document.getElementById('vol-track');
+
+    function updateCenterTransform() {
+        const x = lyricsOpen ? -220 : stateHinted ? -50 : 0;
+        const y = stateLifted ? -28 : 0;
+        centerArea.style.setProperty('--cx', x + 'px');
+        centerArea.style.setProperty('--cy', y + 'px');
+    }
+
+    function showControls() {
+        clearTimeout(hideTimer);
+        if (!stateLifted) {
+            stateLifted = true;
+            buttons.style.opacity = '1';
+            buttons.style.transform = 'translateY(0)';
+            buttons.style.pointerEvents = 'all';
+            lyricsPanel.style.setProperty('--lp-bottom', '80px');
+            updateCenterTransform();
+        }
+    }
+
+    function scheduleHide() {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            stateLifted = false;
+            buttons.style.opacity = '0';
+            buttons.style.transform = 'translateY(10px)';
+            buttons.style.pointerEvents = 'none';
+            lyricsPanel.style.setProperty('--lp-bottom', '0px');
+            updateCenterTransform();
+        }, 300);
+    }
+
+    player.addEventListener('mousemove', (e) => {
+        const rect = player.getBoundingClientRect();
+        const fromBottom = rect.bottom - e.clientY;
+        const fromRight = rect.right - e.clientX;
+
+        if (fromBottom < rect.height * 0.35) {
+            showControls();
+        } else {
+            scheduleHide();
+        }
+
+        if (!lyricsOpen) {
+            const inRightZone = fromRight < rect.width * 0.18;
+            if (inRightZone !== stateHinted) {
+                stateHinted = inRightZone;
+                lyricsHint.style.opacity = inRightZone ? '1' : '0';
+                updateCenterTransform();
+            }
+        }
+    });
+
+    player.addEventListener('mouseleave', () => {
+        scheduleHide();
+        if (!lyricsOpen && stateHinted) {
+            stateHinted = false;
+            lyricsHint.style.opacity = '0';
+            updateCenterTransform();
+        }
+    });
+
+    function openLyrics() {
+        lyricsOpen = true;
+        stateHinted = false;
+        lyricsHint.style.opacity = '0';
+        lyricsPanel.classList.add('open');
+        updateCenterTransform();
+    }
+
+    function closeLyrics() {
+        lyricsOpen = false;
+        lyricsPanel.classList.remove('open');
+        updateCenterTransform();
+    }
+
+    rightHoverZone.addEventListener('click', () => {
+        if (!lyricsOpen) openLyrics(); else closeLyrics();
+    });
+
+    lyricsHint.addEventListener('click', () => {
+        if (!lyricsOpen) openLyrics();
+    });
+
+    player.addEventListener('click', (e) => {
+        if (lyricsOpen) {
+            const rect = player.getBoundingClientRect();
+            if (rect.right - e.clientX > rect.width * 0.55) closeLyrics();
+        }
+    });
+
+    function fmt(s) {
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        return m.toString().padStart(2, '0') + ':' + sec.toString().padStart(2, '0');
+    }
+
+    function updateProgress() {
+        progressFill.style.width = (curSeconds / totalSeconds * 100) + '%';
+        curTime.textContent = fmt(curSeconds);
+    }
+
+    btnPlay.addEventListener('click', () => {
+        playing = !playing;
+        if (playing) {
+            iconPlay.style.display = 'none';
+            iconPause.style.display = 'block';
+            interval = setInterval(() => {
+                if (curSeconds < totalSeconds) { curSeconds++; updateProgress(); }
+                else { clearInterval(interval); playing = false; iconPlay.style.display = 'block'; iconPause.style.display = 'none'; }
+            }, 1000);
+        } else {
+            iconPlay.style.display = 'block';
+            iconPause.style.display = 'none';
+            clearInterval(interval);
+        }
+    });
+
+    progressTrack.addEventListener('click', (e) => {
+        const rect = progressTrack.getBoundingClientRect();
+        curSeconds = Math.round(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * totalSeconds);
+        updateProgress();
+    });
+
+    volTrack.addEventListener('click', (e) => {
+        const rect = volTrack.getBoundingClientRect();
+        volume = Math.round(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * 100);
+        volFill.style.width = volume + '%';
+    });
+
+    const btnRepeat = document.getElementById('btn-repeat');
+    const btnShuffle = document.getElementById('btn-shuffle');
+    let repeatOn = false, shuffleOn = false;
+
+    btnRepeat.addEventListener('click', () => {
+        repeatOn = !repeatOn;
+        btnRepeat.style.color = repeatOn ? '#fff' : 'rgba(255,255,255,0.85)';
+    });
+
+    btnShuffle.addEventListener('click', () => {
+        shuffleOn = !shuffleOn;
+        btnShuffle.style.color = shuffleOn ? '#fff' : 'rgba(255,255,255,0.85)';
+    });
+</script>
+</body>
+</html>
