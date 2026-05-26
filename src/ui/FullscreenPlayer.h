@@ -160,6 +160,7 @@ private:
     bool lyricsAutoScrollSuspended() const;
     void maybeResumeLyricsAutoScroll();
     bool hasLyrics() const;
+    bool m_isPlaying { false };
     
     void updateState();
     void showControls();

@@ -76,7 +76,7 @@ static int durationToSeconds(int ms)
     return qMax(1, static_cast<int>((ms / 1000.0) + 0.5));
 }
 
-static constexpr int kCardWidth = 380;
+static constexpr int kCardWidth = 420;
 static constexpr int kLyricsPanelWidth = 600; 
 static constexpr int kLyricsPanelPaddingLeft = 20;
 static constexpr int kLyricsFontSize = 20;
@@ -265,7 +265,25 @@ public:
         setFocusPolicy(Qt::NoFocus);
     }
     ~FullscreenBackgroundGL() { makeCurrent(); doneCurrent(); }
-    void setPalette(const QVector<QColor> &colors) { if (m_palette == colors) return; m_prevPalette = m_palette; m_palette = colors; m_progress = 0.0f; update(); }
+    QVector<QColor> palette() const { return m_palette; }
+    void setPalette(const QVector<QColor> &colors) { 
+        if (m_palette == colors) return; 
+        if (m_progress > 0.0f && m_progress < 1.0f && m_prevPalette.size() >= 3 && m_palette.size() >= 3) {
+            QVector<QColor> currentColors;
+            for (int i = 0; i < 3; ++i) {
+                float r = m_prevPalette[i].redF() + (m_palette[i].redF() - m_prevPalette[i].redF()) * m_progress;
+                float g = m_prevPalette[i].greenF() + (m_palette[i].greenF() - m_prevPalette[i].greenF()) * m_progress;
+                float b = m_prevPalette[i].blueF() + (m_palette[i].blueF() - m_prevPalette[i].blueF()) * m_progress;
+                currentColors.append(QColor::fromRgbF(r, g, b));
+            }
+            m_prevPalette = currentColors;
+        } else {
+            m_prevPalette = m_palette; 
+        }
+        m_palette = colors; 
+        m_progress = 0.0f; 
+        update(); 
+    }
     void setPaletteInstant(const QVector<QColor> &colors) { m_palette = colors; m_prevPalette = colors; m_progress = 1.0f; update(); }
     void setPaletteTransition(float progress) { m_progress = progress; update(); }
     void setTime(float t) { m_time = t; update(); }
@@ -414,7 +432,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     cal->setAlignment(Qt::AlignCenter);
 
     m_coverLabel = new QLabel(m_centerArea);
-    m_coverLabel->setFixedSize(380, 380);
+    m_coverLabel->setFixedSize(kCardWidth, kCardWidth);
     m_coverLabel->setAlignment(Qt::AlignCenter);
     cal->addWidget(m_coverLabel, 0, Qt::AlignCenter);
 
@@ -456,7 +474,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsList = new QListWidget(m_lyricsPanel);
     m_lyricsList->setWordWrap(true);
     m_lyricsList->setUniformItemSizes(false);
-    m_lyricsList->setSpacing(18);
+    m_lyricsList->setSpacing(10);
     m_lyricsList->setFocusPolicy(Qt::NoFocus);
     m_lyricsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_lyricsList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -583,10 +601,26 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     connect(m_repeatBtn,  &QPushButton::clicked, this, &FullscreenPlayer::repeatToggleRequested);
     connect(m_muteBtn,    &QPushButton::clicked, this, &FullscreenPlayer::muteToggleRequested);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &FullscreenPlayer::volumeChangeRequested);
-    connect(m_seekSlider, &QSlider::sliderPressed, this, [this]{ m_userSeeking = true; });
+    connect(m_volumeSlider, &QSlider::sliderPressed, this, [this]{
+        if (m_lyricsVisible) suspendLyricsAutoScroll();
+    });
+    connect(m_seekSlider, &QSlider::sliderPressed, this, [this]{
+        m_userSeeking = true;
+        if (m_lyricsVisible) suspendLyricsAutoScroll();
+    });
+    connect(m_seekSlider, &QSlider::sliderPressed, this, [this]{
+        if (m_lyricsVisible) suspendLyricsAutoScroll();
+    });
+
     connect(m_seekSlider, &QSlider::sliderReleased, this, [this]{
         m_userSeeking = false;
         emit seekRequested(m_seekSlider->value());
+        if (m_lyricsVisible && m_lyricsSyncedAvailable) {
+            m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 1500;
+            m_expectedSeekPositionMs = m_seekSlider->value();
+            updateLyricsHighlight(m_seekSlider->value());
+            animateLyricsScrollTo(m_lyricsCurrentIndex, true, false);
+        }
     });
     
     m_paletteTransitionAnim = new QVariantAnimation(this);
@@ -629,6 +663,20 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e) {
         if (e->type() == QEvent::MouseButtonPress && m_lyricsVisible) {
             QMouseEvent *me = static_cast<QMouseEvent*>(e);
             if (me->button() == Qt::LeftButton) {
+                QListWidgetItem *item = m_lyricsList->itemAt(me->pos());
+                if (item && m_lyricsSyncedAvailable) {
+                    int row = m_lyricsList->row(item);
+                    if (row >= 0 && row < m_lyricsSyncedTimes.size()) {
+                        const int seekMs = m_lyricsSyncedTimes.at(row);
+                        m_seekIgnoreUntilMs = QDateTime::currentMSecsSinceEpoch() + 2000;
+                        m_expectedSeekPositionMs = seekMs;
+                        emit seekRequested(seekMs);
+                        if (!m_isPlaying) emit playPauseRequested();
+                        m_lyricsCurrentIndex = row;
+                        startLyricsHighlightAnimation(m_lyricsPrevIndex, row);
+                        return true;
+                    }
+                }
                 setLyricsVisible(false, true);
                 return true;
             }
@@ -737,8 +785,10 @@ void FullscreenPlayer::updateTrack(const QPixmap &cover, const QString &title, c
     if (isVisible()) { 
         extractPalette(m_rawCover); 
         if (m_bgWidget) { 
-            m_bgWidget->setPalette(m_palette); 
-            if (m_paletteTransitionAnim) { m_paletteTransitionAnim->stop(); m_paletteTransitionAnim->start(); }
+            if (m_bgWidget->palette() != m_palette) {
+                m_bgWidget->setPalette(m_palette); 
+                if (m_paletteTransitionAnim) { m_paletteTransitionAnim->stop(); m_paletteTransitionAnim->start(); }
+            }
             if (m_speedPulseAnim) { m_speedPulseAnim->stop(); m_speedPulseAnim->start(); }
         } 
     }
@@ -757,6 +807,7 @@ void FullscreenPlayer::updatePosition(int ms) {
 }
 
 void FullscreenPlayer::updatePlayState(bool playing) {
+    m_isPlaying = playing;
     m_playBtn->setText(playing ? QString::fromUtf8("\xE2\x8F\xB8") : QString::fromUtf8("\xE2\x96\xB6"));
     m_positionAnchorPlaying = playing; m_positionAnchorWallMs = QDateTime::currentMSecsSinceEpoch(); m_positionAnchorAudioMs = m_lastPositionMs;
 }
@@ -968,15 +1019,28 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate) {
     m_lyricsVisible = visible;
     updateState();
 
+    QPointF targetOffset = m_centerOffsetAnim->endValue().toPointF();
+
+    m_centerArea->adjustSize();
+    QPoint centerPos((width() - m_centerArea->width())/2, (height() - m_centerArea->height())/2);
+    centerPos += QPoint((int)targetOffset.x(), (int)targetOffset.y());
+    int lyricsPanelVisibleX = centerPos.x() + m_centerArea->width() + 10;
+
     m_lyricsSlideAnim->stop();
     m_lyricsSlideAnim->setStartValue(m_lyricsPanelX);
-    m_lyricsSlideAnim->setEndValue(visible ? (qreal)(width() - kLyricsPanelWidth) : (qreal)width());
+    m_lyricsSlideAnim->setEndValue(visible ? (qreal)lyricsPanelVisibleX : (qreal)width());
     if (animate) m_lyricsSlideAnim->start(); else setLyricsPanelX(m_lyricsSlideAnim->endValue().toReal());
 
-    // Hide hint icon when lyrics are visible
-    if (m_lyricsHintOpacityEffect) {
-        m_lyricsHintOpacityEffect->setOpacity(visible ? 0.0 : (m_stateHinted ? 1.0 : 0.0));
+    if (visible) {
+        m_stateHinted = false;
+        m_lyricsHintOpacityAnim->stop();
+        m_lyricsHintOpacityEffect->setOpacity(0.0);
+        m_lyricsHintSlideAnim->stop();
+        int targetX = width() - m_lyricsHint->width() - 24 + 20;
+        m_lyricsHint->move(targetX, (height() - m_lyricsHint->height()) / 2);
     }
+    if (m_lyricsHintOpacityEffect)
+        m_lyricsHintOpacityEffect->setOpacity(visible ? 0.0 : (m_stateHinted ? 1.0 : 0.0));
 
     if (visible && m_lyricsSyncedAvailable) { updateLyricsHighlight(m_lastPositionMs); animateLyricsScrollTo(m_lyricsCurrentIndex, true, true); }
 }
@@ -1147,7 +1211,6 @@ void FullscreenPlayer::paintEvent(QPaintEvent *) {
     QPainter painter(this); 
     painter.setRenderHint(QPainter::SmoothPixmapTransform); 
     
-    // SINGLE GLOBAL BOTTOM SHADOW
     QLinearGradient grad(0, height(), 0, height() - 150);
     grad.setColorAt(0, QColor(0,0,0,140));
     grad.setColorAt(1, Qt::transparent);
@@ -1174,9 +1237,8 @@ void FullscreenPlayer::updateLayout() {
     m_titleBar->setGeometry(0, 0, w, 60);
     m_centerArea->adjustSize();
     
-    // Текст ближе к центру: tx анимируется через m_centerOffset.x()
     double tx = m_centerOffset.x();
-    QPoint centerPos((w - m_centerArea->width())/2, (h - m_centerArea->height())/2);
+    QPoint centerPos((w - m_centerArea->width())/2 , (h - m_centerArea->height())/2);
     centerPos += QPoint(tx, m_centerOffset.y());
     m_centerArea->move(centerPos);
     
@@ -1185,11 +1247,15 @@ void FullscreenPlayer::updateLayout() {
         if (!m_stateHinted) hintX += 20;
         m_lyricsHint->move(hintX, (h - m_lyricsHint->height())/2);
     }
-    
+
+    int lyricsPanelVisibleX = centerPos.x() + m_centerArea->width() + 10;
+    int lyricsPanelW = w - lyricsPanelVisibleX;
+    int lyricsTy = (int)m_centerOffset.y();
+
     if (m_lyricsSlideAnim && m_lyricsSlideAnim->state() == QAbstractAnimation::Stopped) {
-        m_lyricsPanel->setGeometry(m_lyricsVisible ? (w - kLyricsPanelWidth) : w, 0, kLyricsPanelWidth, h);
+        m_lyricsPanel->setGeometry(m_lyricsVisible ? lyricsPanelVisibleX : w, lyricsTy, lyricsPanelW, h);
     } else {
-        m_lyricsPanel->setGeometry(m_lyricsPanelX, 0, kLyricsPanelWidth, h);
+        m_lyricsPanel->setGeometry(m_lyricsPanelX, lyricsTy, lyricsPanelW, h);
     }
 
     int pcH = m_playbackControls->sizeHint().height();
@@ -1247,7 +1313,7 @@ void FullscreenPlayer::hideControls() {
 
 void FullscreenPlayer::updateState() {
     // Уменьшил сдвиг влево (-140 вместо -220), чтобы текст был ближе к центру
-    double tx = m_lyricsVisible ? -140 : (m_stateHinted ? -50 : 0);
+    double tx = m_lyricsVisible ? -260 : (m_stateHinted ? -50 : 0);
     double ty = m_stateLifted ? -28 : 0;
     m_centerOffsetAnim->stop();
     m_centerOffsetAnim->setStartValue(m_centerOffset);
@@ -1259,8 +1325,8 @@ void FullscreenPlayer::mouseMoveEvent(QMouseEvent *e) { QWidget::mouseMoveEvent(
 void FullscreenPlayer::leaveEvent(QEvent *e) { QWidget::leaveEvent(e); }
 
 void FullscreenPlayer::updateCoverWidget() {
-    if (m_rawCover.isNull()) { m_coverLabel->clear(); m_coverLabel->setFixedSize(380, 380); return; }
-    QPixmap px = m_rawCover.scaled(380, 380, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (m_rawCover.isNull()) { m_coverLabel->clear(); m_coverLabel->setFixedSize(kCardWidth, kCardWidth); return; }
+    QPixmap px = m_rawCover.scaled(kCardWidth, kCardWidth, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     m_coverLabel->setPixmap(rounded(px, 10)); m_coverLabel->setFixedSize(px.size());
 }
 
