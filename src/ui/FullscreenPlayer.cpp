@@ -192,13 +192,18 @@ public:
             ? 1.0
             : 1.0 - std::pow(1.0 - t, 3.0) * std::cos(t * 7.5);
 
-        qreal blend = 0.0;
-        if (isActive) blend = eased;
-        else if (isPrev) blend = 1.0 - eased;
+        qreal blendRaw = 0.0;
+        if (isActive) blendRaw = eased;
+        else if (isPrev) blendRaw = 1.0 - eased;
+
+        // Keep color/weight stable during the first frame of a line switch.
+        qreal blend = qBound(0.0, blendRaw, 1.0);
+        if (isActive) blend = qMax(0.12, blend);
 
         // Scale: inactive rows are slightly smaller, active one "pops" forward
         const qreal minScale = 0.92;
-        const qreal scale = minScale + (1.0 - minScale) * blend;
+        const qreal scaleBlend = qBound(0.0, blendRaw, 1.15);
+        const qreal scale = minScale + (1.0 - minScale) * scaleBlend;
 
         QFont font = opt.font;
         font.setPixelSize(kLyricsFontSizeActive);
@@ -231,7 +236,8 @@ public:
             float dist = qAbs(cy - viewH * 0.5f) / (viewH * 0.5f);
             float fade = 1.0f - qBound(0.0f, (dist - 0.25f) / 0.6f, 1.0f);
             fade       = fade * fade * fade;
-            painter->setOpacity(qBound(0.05f, fade, 1.0f));
+            const float minFade = isActive ? 0.2f : 0.05f;
+            painter->setOpacity(qBound(minFade, fade, 1.0f));
         }
 
         QTextOption textOpt;
