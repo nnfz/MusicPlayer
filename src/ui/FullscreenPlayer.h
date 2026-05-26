@@ -129,6 +129,7 @@ protected:
     bool        eventFilter(QObject *w, QEvent *e) override;
     void        paintEvent(QPaintEvent *) override;
     void        keyPressEvent(QKeyEvent *e) override;
+    void        mousePressEvent(QMouseEvent *e) override;
     void        resizeEvent(QResizeEvent *e) override;
     void        mouseMoveEvent(QMouseEvent *e) override;
     void        leaveEvent(QEvent *e) override;
@@ -175,6 +176,7 @@ private:
     QPushButton           *m_lyricsHint   { nullptr };
     
     FullscreenBackgroundGL *m_bgWidget    { nullptr };
+    QGraphicsOpacityEffect *m_rootOpacityEffect { nullptr };
     QGraphicsOpacityEffect *m_centerAreaOpacityEffect { nullptr };
     QGraphicsOpacityEffect *m_titleBarOpacityEffect { nullptr };
     QGraphicsOpacityEffect *m_seekBarOpacityEffect { nullptr };
