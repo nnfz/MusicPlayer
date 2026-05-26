@@ -168,7 +168,7 @@ public:
         QFont font = opt.font;
         font.setPixelSize(kLyricsFontSizeActive);
         font.setBold(true);
-        font.setFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
+        // font.setFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
         QFontMetrics fm(font);
         int width = opt.rect.width();
         if (width <= 0 && m_view) width = m_view->viewport()->width() - 24;
@@ -210,7 +210,7 @@ public:
         const int weightInt = QFont::Normal + (int)((QFont::DemiBold - QFont::Normal) * blend);
         const int clamped = qBound((int)QFont::Normal, weightInt, (int)QFont::DemiBold);
         font.setWeight(static_cast<QFont::Weight>(clamped));
-        font.setFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
+        // font.setFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
         painter->setFont(font);
 
         auto lerp = [&](int a, int b) { return a + (int)((b - a) * blend); };
