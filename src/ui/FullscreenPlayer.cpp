@@ -436,14 +436,25 @@ QPointF FullscreenPlayer::springStep(QPointF current, QPointF target, QPointF &v
 {
     QPointF force = (target - current) * stiffness - velocity * damping;
     velocity += force * dt;
-    return current + velocity * dt;
+    QPointF next = current + velocity * dt;
+    if (qAbs(next.x() - target.x()) < 0.05f && qAbs(next.y() - target.y()) < 0.05f &&
+        qAbs(velocity.x()) < 0.5f && qAbs(velocity.y()) < 0.5f) {
+        velocity = QPointF(0, 0);
+        return target;
+    }
+    return next;
 }
 
 float FullscreenPlayer::springStep1D(float current, float target, float &velocity, float dt, float stiffness, float damping)
 {
     float force = (target - current) * stiffness - velocity * damping;
     velocity += force * dt;
-    return current + velocity * dt;
+    float next = current + velocity * dt;
+    if (qAbs(next - target) < 0.05f && qAbs(velocity) < 0.5f) {
+        velocity = 0.f;
+        return target;
+    }
+    return next;
 }
 
 FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
@@ -1473,22 +1484,22 @@ void FullscreenPlayer::updateLayout()
 
     m_centerArea->adjustSize();
     QPoint centerPos((w - m_centerArea->width())/2, (h - m_centerArea->height())/2);
-    centerPos += QPoint((int)m_centerOffset.x(), (int)m_centerOffset.y());
+    centerPos += QPoint(qRound(m_centerOffset.x()), qRound(m_centerOffset.y()));
     m_centerArea->move(centerPos);
 
-    m_lyricsHint->move((int)m_hintX, (h - m_lyricsHint->height())/2);
+    m_lyricsHint->move(qRound(m_hintX), (h - m_lyricsHint->height())/2);
     m_lyricsHintOpacityEffect->setOpacity((double)m_hintAlpha);
 
-    const int newLyricsX = (int)m_lyricsPanelX;
+    const int newLyricsX = qRound(m_lyricsPanelX);
     const int newLyricsW = w - newLyricsX;
     if (m_lyricsPanel->x() != newLyricsX || m_lyricsPanel->width() != newLyricsW) {
-        m_lyricsPanel->setGeometry(newLyricsX, (int)m_centerOffset.y(), newLyricsW, h);
+        m_lyricsPanel->setGeometry(newLyricsX, qRound(m_centerOffset.y()), newLyricsW, h);
     }
 
     const int pcH = m_playbackControls->sizeHint().height();
     const int sbH = m_seekBarArea->sizeHint().height();
     m_seekBarArea->setGeometry(0, h - sbH, w, sbH);
-    m_playbackControls->setGeometry(0, (int)m_controlsY, w, pcH);
+    m_playbackControls->setGeometry(0, qRound(m_controlsY), w, pcH);
     m_playbackControlsOpacityEffect->setOpacity((double)m_controlsAlpha);
     m_playbackControls->setEnabled(m_controlsAlpha > 0.1f);
 
