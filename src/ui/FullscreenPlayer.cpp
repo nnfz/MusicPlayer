@@ -187,28 +187,34 @@ public:
         const bool isPrev   = index.row() == m_prevIndex;
         const qreal t = qBound(0.0, m_progress, 1.0);
 
-        // Spring-like easing with subtle overshoot — iOS/Apple Music feel
+        // Smooth, broad overshoot without high-frequency twitching
         const qreal eased = (t >= 1.0)
             ? 1.0
-            : 1.0 - std::pow(1.0 - t, 3.0) * std::cos(t * 7.5);
+            : 1.0 - std::pow(1.0 - t, 3.0) * std::cos(t * 3.5); // Lowered frequency for elegant bounce
 
         qreal blendRaw = 0.0;
         if (isActive) blendRaw = eased;
         else if (isPrev) blendRaw = 1.0 - eased;
 
-        // Keep color/weight stable during the first frame of a line switch.
+        // Color and weight blend (clamped 0 to 1)
         qreal blend = qBound(0.0, blendRaw, 1.0);
         if (isActive) blend = qMax(0.12, blend);
 
         // Scale: inactive rows are slightly smaller, active one "pops" forward
         const qreal minScale = 0.92;
-        const qreal scaleBlend = qBound(0.0, blendRaw, 1.15);
+        // Do not clamp the overshoot abruptly, let it breathe naturally
+        const qreal scaleBlend = isActive ? blendRaw : qMax(0.0, blendRaw);
         const qreal scale = minScale + (1.0 - minScale) * scaleBlend;
 
         QFont font = opt.font;
         font.setPixelSize(kLyricsFontSizeActive);
-        const int weightInt = QFont::Normal + (int)((QFont::DemiBold - QFont::Normal) * blend);
-        const int clamped = qBound((int)QFont::Normal, weightInt, (int)QFont::DemiBold);
+        
+        // For smoother boldening without harsh snapping, use a smaller weight range (Medium to Bold)
+        // Normal (50) to DemiBold (63) jumps too harshly. Medium (57) to Bold (75) feels better if supported.
+        const int baseWeight = QFont::Medium;
+        const int activeWeight = QFont::Bold;
+        const int weightInt = baseWeight + (int)((activeWeight - baseWeight) * blend);
+        const int clamped = qBound((int)baseWeight, weightInt, (int)activeWeight);
         font.setWeight(static_cast<QFont::Weight>(clamped));
         font.setFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
         painter->setFont(font);
@@ -556,7 +562,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsList->setStyleSheet("QListWidget{background:transparent;border:none;}");
     m_lyricsList->installEventFilter(this);
     m_lyricsList->viewport()->installEventFilter(this);
-    m_lyricsList->setResizeMode(QListView::Fixed);
+    m_lyricsList->setResizeMode(QListView::Adjust);
     
     m_lyricsDelegate = new LyricsItemDelegate(m_lyricsList);
     m_lyricsDelegate->setView(m_lyricsList);
@@ -660,12 +666,12 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
         m_animationSpeed = 1.0f + 4.0f * pulse;
     });
 
-    // 380ms OutCubic — строки плавно "выплывают", с чуть заметным overshoot в делегате
+    // 450ms Linear — Spring math in delegate handles the easing
     m_lyricsHighlightAnim = new QVariantAnimation(this);
-    m_lyricsHighlightAnim->setDuration(380);
+    m_lyricsHighlightAnim->setDuration(450);
     m_lyricsHighlightAnim->setStartValue(0.0f);
     m_lyricsHighlightAnim->setEndValue(1.0f);
-    m_lyricsHighlightAnim->setEasingCurve(QEasingCurve::OutCubic);
+    m_lyricsHighlightAnim->setEasingCurve(QEasingCurve::Linear);
     connect(m_lyricsHighlightAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v){
         if (m_lyricsDelegate) m_lyricsDelegate->setProgress(v.toReal());
     });
@@ -1231,28 +1237,21 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate)
 {
     if (visible == m_lyricsVisible) return;
     m_lyricsVisible = visible;
+    
+    if (visible) {
+        m_stateHinted = false;
+        m_lyricsHintOpacityEffect->setOpacity(0.0);
+    } else {
+        m_lyricsHintOpacityEffect->setOpacity(m_stateHinted ? 1.0 : 0.0);
+        if (m_stateHinted) m_hintAlphaTarget = 1.0f;
+    }
+
     updateState();
-
-    m_centerArea->adjustSize();
-    QPoint centerPos((width() - m_centerArea->width())/2, (height() - m_centerArea->height())/2);
-    centerPos += QPoint((int)m_centerOffsetTarget.x(), (int)m_centerOffsetTarget.y());
-    float lyricsPanelVisibleX = (float)(centerPos.x() + m_centerArea->width() + 10);
-
-    m_lyricsPanelXTarget = visible ? lyricsPanelVisibleX : (float)width();
 
     if (!animate) {
         m_lyricsPanelX         = m_lyricsPanelXTarget;
         m_lyricsPanelXVelocity = 0.f;
         updateLayout();
-    }
-
-    if (visible) {
-        m_stateHinted        = false;
-        m_hintAlphaTarget    = 0.f;
-        m_hintXTarget        = (float)(width() - m_lyricsHint->width() - 24 + 20);
-        m_lyricsHintOpacityEffect->setOpacity(0.0);
-    } else {
-        m_lyricsHintOpacityEffect->setOpacity(m_stateHinted ? 1.0 : 0.0);
     }
 
     if (visible && m_lyricsSyncedAvailable) {
@@ -1319,9 +1318,9 @@ void FullscreenPlayer::tickLyricsSmoothScroll()
     dt = qMax<qint64>(1, qMin<qint64>(dt, 40));
     const float dtSec = (float)dt / 1000.f;
 
-    // Spring physics — stiffness/damping tuned for Apple Music feel
-    const float stiffness = 180.f;
-    const float damping   = 22.f;
+    // Spring physics — softer, more fluid scroll without high-frequency twitching
+    const float stiffness = 120.f;
+    const float damping   = 15.f;
     const float force     = (float)dist * stiffness - m_lyricsScrollVelocity * damping;
     m_lyricsScrollVelocity += force * dtSec;
     m_lyricsScrollVelocity  = qBound(-4000.f, m_lyricsScrollVelocity, 4000.f);
@@ -1440,7 +1439,23 @@ void FullscreenPlayer::resizeEvent(QResizeEvent *e)
         m_bgWidget->move(0, 0);
         m_bgWidget->resize(size());
     }
-    if (m_isOpen) updateLayout();
+    
+    // Shift current animated positions by the size delta so they don't lag behind visually
+    if (e->oldSize().isValid()) {
+        const int dw = e->size().width() - e->oldSize().width();
+        const int dh = e->size().height() - e->oldSize().height();
+        
+        if (!m_lyricsVisible) m_lyricsPanelX += dw;
+        else m_lyricsPanelX += (float)dw / 2.0f; // Panel is relatively centered with cover when visible
+        
+        m_hintX += dw;
+        m_controlsY += dh;
+    }
+
+    if (m_isOpen) {
+        updateState();
+        updateLayout();
+    }
 }
 
 void FullscreenPlayer::updateBassLevel(float level)
@@ -1509,6 +1524,16 @@ void FullscreenPlayer::updateState()
     const int baseY = height() - sbH - pcH;
     m_controlsYTarget     = m_stateLifted ? (float)baseY : (float)(baseY + 40);
     m_controlsAlphaTarget = m_stateLifted ? 1.f : 0.f;
+
+    m_centerArea->adjustSize();
+    QPoint centerPos((width() - m_centerArea->width())/2, (height() - m_centerArea->height())/2);
+    centerPos += QPoint((int)m_centerOffsetTarget.x(), (int)m_centerOffsetTarget.y());
+    
+    float lyricsPanelVisibleX = (float)(centerPos.x() + m_centerArea->width() + 10);
+    m_lyricsPanelXTarget = m_lyricsVisible ? lyricsPanelVisibleX : (float)width();
+    
+    m_hintAlphaTarget = (m_stateHinted && !m_lyricsVisible) ? 1.f : 0.f;
+    m_hintXTarget = (float)(width() - m_lyricsHint->width() - 24 + ((m_stateHinted && !m_lyricsVisible) ? 0 : 20));
 }
 
 void FullscreenPlayer::mouseMoveEvent(QMouseEvent *e) { QWidget::mouseMoveEvent(e); }
@@ -1536,10 +1561,11 @@ void FullscreenPlayer::animateTick()
     m_phase += 0.015f * m_animationSpeed * (dt / 0.016f);
     if (m_bgWidget) m_bgWidget->setTime(m_phase);
 
-    static constexpr float kStiff  = 280.f;
-    static constexpr float kDamp   = 26.f;
-    static constexpr float kStiffF = 200.f;
-    static constexpr float kDampF  = 22.f;
+    // Lower stiffness for slower, larger, more elegant bounces instead of small twitches
+    static constexpr float kStiff  = 130.f;
+    static constexpr float kDamp   = 16.f;
+    static constexpr float kStiffF = 100.f;
+    static constexpr float kDampF  = 14.f;
 
     m_centerOffset = springStep(m_centerOffset, m_centerOffsetTarget, m_centerOffsetVelocity, dt, kStiff, kDamp);
 
