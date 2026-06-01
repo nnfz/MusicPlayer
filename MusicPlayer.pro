@@ -4,6 +4,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 CONFIG += no_include_pwd
+CONFIG -= qt_entry_point
 
 TARGET = MusicPlayer
 TEMPLATE = app
@@ -31,7 +32,8 @@ SOURCES += \
     src/ui/FullscreenPlayer.cpp
 
 win32 {
-    LIBS += -lole32 -luuid -lavrt -lshell32 -lcomctl32 -lmingw32
+    QMAKE_LIBS_QT_ENTRY = 
+    LIBS += -lole32 -luuid -lavrt -lshell32 -lcomctl32 -lmingw32 -lucrt
 
     FFMPEG_DIR = $$PWD/third_party/ffmpeg
     exists($$FFMPEG_DIR/include/libavformat/avformat.h) {

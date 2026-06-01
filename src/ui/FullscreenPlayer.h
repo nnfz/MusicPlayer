@@ -15,6 +15,10 @@
 #include <QParallelAnimationGroup>
 #include <QGraphicsOpacityEffect>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QEasingCurve>
+#include <QStyleOptionButton>
+#include <QStyle>
 #include "ClickableSlider.h"
 
 class QNetworkAccessManager;
@@ -63,18 +67,69 @@ private:
     static constexpr int kFade  { 24 };
 };
 
+class AnimatedScaleButton : public QPushButton {
+    Q_OBJECT
+    Q_PROPERTY(float scale READ scale WRITE setScale)
+public:
+    AnimatedScaleButton(QWidget *parent = nullptr) : QPushButton(parent) {
+        m_anim = new QPropertyAnimation(this, "scale", this);
+        m_anim->setDuration(120);
+        m_anim->setEasingCurve(QEasingCurve::OutQuad);
+    }
+    float scale() const { return m_scale; }
+    void setScale(float s) { m_scale = s; update(); }
+protected:
+    void enterEvent(QEnterEvent *e) override {
+        QPushButton::enterEvent(e);
+        m_anim->stop(); m_anim->setEndValue(1.15f); m_anim->start();
+    }
+    void leaveEvent(QEvent *e) override {
+        QPushButton::leaveEvent(e);
+        m_anim->stop(); m_anim->setEndValue(1.0f); m_anim->start();
+    }
+    void mousePressEvent(QMouseEvent *e) override {
+        QPushButton::mousePressEvent(e);
+        m_anim->stop(); m_anim->setEndValue(0.85f); m_anim->start();
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override {
+        QPushButton::mouseReleaseEvent(e);
+        m_anim->stop(); m_anim->setEndValue(rect().contains(e->pos()) ? 1.15f : 1.0f); m_anim->start();
+    }
+    void paintEvent(QPaintEvent *e) override {
+        if (qFuzzyCompare(m_scale, 1.0f)) {
+            QPushButton::paintEvent(e);
+            return;
+        }
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.translate(rect().center());
+        p.scale(m_scale, m_scale);
+        p.translate(-rect().center());
+
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        style()->drawControl(QStyle::CE_PushButton, &opt, &p, this);
+    }
+private:
+    float m_scale = 1.0f;
+    QPropertyAnimation* m_anim;
+};
+
 class FullscreenPlayer : public QWidget
 {
     Q_OBJECT
     Q_PROPERTY(qreal mainUiOpacity READ mainUiOpacity WRITE setMainUiOpacity)
     Q_PROPERTY(qreal controlsOpacity READ controlsOpacity WRITE setControlsOpacity)
+    Q_PROPERTY(qreal openAlpha READ openAlpha WRITE setOpenAlpha)
 
 public:
     explicit FullscreenPlayer(QWidget *parent = nullptr);
-    ~FullscreenPlayer() override;
+    ~FullscreenPlayer();
 
     void openFor(const QPixmap &cover, const QString &title, const QString &artist,
                  const QString &album, int durationMs, int positionMs, bool isPlaying, int volume);
+    void activate();
     void updateTrack(const QPixmap &cover, const QString &title,
                      const QString &artist, const QString &album, int durationMs);
     void updatePosition(int ms);
@@ -90,8 +145,18 @@ public:
 
     qreal controlsOpacity() const { return m_controlsOpacity; }
     void setControlsOpacity(qreal v);
+qreal openAlpha() const { return (qreal)m_openAlpha; }
+void setOpenAlpha(qreal v);
 
-    bool isOpen() const { return m_isOpen; }
+bool isOpen() const { return m_isOpen; }
+
+public slots:
+    QPixmap grabUi();
+    void setUiHidden(bool hidden);
+    void setFsAnimating(bool animating);
+
+    static void setLyricsFontFamily(const QString &family) { s_lyricsFontFamily = family; }
+    static QString lyricsFontFamily() { return s_lyricsFontFamily; }
 
 signals:
     void seekRequested(int ms);
@@ -103,6 +168,7 @@ signals:
     void shuffleToggleRequested();
     void repeatToggleRequested();
     void likeToggleRequested();
+    void closeRequested();
 
 public slots:
     void closeOverlay();
@@ -124,6 +190,7 @@ private slots:
     void tickLyricsSmoothScroll();
 
 private:
+    static QString s_lyricsFontFamily;
     void extractPalette(const QPixmap &albumArt);
     void updateCoverWidget();
     void requestLyrics();
@@ -133,7 +200,7 @@ private:
     void parsePlainLyrics(const QString &text);
     void updateLyricsButtonState();
     void updateLyricsHighlight(int ms);
-    void setLyricsVisible(bool visible, bool animate);
+    void setLyricsVisible(bool visible, bool animate, bool isUserAction = false);
     void rebuildLyricsList();
     void startLyricsHighlightAnimation(int prevIndex, int nextIndex);
     void animateLyricsScrollTo(int index, bool force = false, bool instant = false);
@@ -186,6 +253,9 @@ private:
     ClickableSlider       *m_volumeSlider { nullptr };
     QListWidget           *m_lyricsList   { nullptr };
 
+    QLabel                *m_contentSnapshotLabel { nullptr };
+    bool                  m_fsAnimating     { false };
+
     QVariantAnimation     *m_lyricsHighlightAnim { nullptr };
     LyricsItemDelegate    *m_lyricsDelegate      { nullptr };
 
@@ -202,6 +272,7 @@ private:
 
     qreal                  m_mainUiOpacity  { 1.0 };
     qreal                  m_controlsOpacity { 0.0 };
+    float                  m_openAlpha       { 0.0 };
 
     QPointF                m_centerOffset;
     QPointF                m_centerOffsetTarget;
@@ -227,14 +298,11 @@ private:
     float                  m_hintXTarget         { 0.f };
     float                  m_hintXVelocity       { 0.f };
 
-    float                  m_openAlpha           { 1.f };
-    float                  m_openAlphaTarget     { 1.f };
-    float                  m_openAlphaVelocity   { 0.f };
-
     int                    m_lyricsScrollTarget   { 0 };
     float                  m_lyricsScrollVelocity { 0.f };
 
     bool                   m_lyricsVisible { false };
+    bool                   m_lyricsWasManuallyOpened { false };
     bool                   m_stateHinted   { false };
     bool                   m_stateLifted   { false };
     bool                   m_isPlaying     { false };
@@ -252,6 +320,8 @@ private:
     QString                m_trackArtist;
     QString                m_trackAlbum;
     int                    m_trackDurationSec { 0 };
+
+    int                    m_currentCoverSize { 420 };
 
     QNetworkAccessManager *m_lyricsNet          { nullptr };
     QNetworkReply         *m_lyricsReply        { nullptr };

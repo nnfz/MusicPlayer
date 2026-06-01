@@ -94,9 +94,13 @@ void ClickableSlider::wheelEvent(QWheelEvent *event)
     int steps = delta / 120;
     if (steps == 0) steps = (delta > 0) ? 1 : -1;
 
-    // Use singleStep() for fine control via wheel.
-    // For seekbar, we'll set this to something like 5s.
-    int amount = steps * singleStep();
+    // Use a fixed step for the wheel event if singleStep is too small (e.g. 1ms)
+    int stepAmount = singleStep();
+    if (stepAmount <= 1 && maximum() > 1000) {
+        stepAmount = 5000; // 5 seconds jump for seek bar
+    }
+    
+    int amount = steps * stepAmount;
 
     emit sliderPressed();
     setValue(value() + amount);

@@ -170,6 +170,8 @@ private:
     void resyncPreparedNext();
     void prepareNextGapless();
 
+    bool isFsAnimating() const { return m_isFsAnimating; }
+
     GaplessAudioEngine *m_engine = nullptr;
     MetadataLoaderThread *m_metadataThread = nullptr;
 
@@ -220,6 +222,8 @@ private:
     TrackMetadata m_playbackMetadata;
     QListWidget *m_playlistList = nullptr;
     QSplitter *m_splitter = nullptr;
+    QWidget *m_mainUiContainer = nullptr;
+    QGraphicsBlurEffect *m_mainUiContainerEffect = nullptr;
 
     PlaylistTable *m_playlistTable = nullptr;
 
@@ -272,6 +276,8 @@ private:
     SettingsDialog *m_settingsDialog = nullptr;
     FullscreenPlayer *m_fullscreenPlayer = nullptr;
     CornerGlowWidget *m_bottomGlow = nullptr;
+    QLabel *m_blurLabel = nullptr;
+    bool m_isFsAnimating = false;
 
     #ifdef Q_OS_WIN
         WinTaskbarButtons *m_winTaskbar = nullptr;

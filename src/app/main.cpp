@@ -1,6 +1,17 @@
 #include "MusicPlayer.h"
+#include "FullscreenPlayer.h"
 #include <QApplication>
+#include <QSurfaceFormat>
 #include <QFontDatabase>
+
+#ifdef Q_OS_WIN
+extern "C" {
+    int _argc = 0;
+    char** _argv = nullptr;
+    int* __imp___argc = &_argc;
+    char*** __imp___argv = &_argv;
+}
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -25,22 +36,15 @@ int main(int argc, char *argv[])
     
     app.setPalette(darkPalette);
     
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-Bold.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-BoldItalic.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-Italic.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-Light.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-LightItalic.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-Medium.ttf");
-    QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-MediumItalic.ttf");
-    int fontId = QFontDatabase::addApplicationFont(":/fonts/NeueMontreal-Regular.ttf");
-    
+    int fontId = QFontDatabase::addApplicationFont(":/fonts/Geist-VariableFont.ttf");
     if (fontId != -1) {
         QStringList families = QFontDatabase::applicationFontFamilies(fontId);
         if (!families.isEmpty()) {
             QFont appFont(families.at(0));
-            appFont.setStyleStrategy(QFont::PreferAntialias);
             appFont.setPointSize(10);
+            appFont.setHintingPreference(QFont::PreferNoHinting);
             app.setFont(appFont);
+            FullscreenPlayer::setLyricsFontFamily(families.at(0));
         }
     }
 

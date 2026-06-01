@@ -1,13 +1,5 @@
-<!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource>
-        <file>fonts/NeueMontreal-Bold.ttf</file>
-        <file>fonts/NeueMontreal-BoldItalic.ttf</file>
-        <file>fonts/NeueMontreal-Italic.ttf</file>
-        <file>fonts/NeueMontreal-Light.ttf</file>
-        <file>fonts/NeueMontreal-LightItalic.ttf</file>
-        <file>fonts/NeueMontreal-Medium.ttf</file>
-        <file>fonts/NeueMontreal-MediumItalic.ttf</file>
-        <file>fonts/NeueMontreal-Regular.ttf</file>
+        <file>fonts/Geist-VariableFont.ttf</file>
     </qresource>
 </RCC>

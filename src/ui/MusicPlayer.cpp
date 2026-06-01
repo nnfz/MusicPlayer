@@ -1,4 +1,8 @@
 #include "MusicPlayer.h"
+#include <QPropertyAnimation>
+#include <QParallelAnimationGroup>
+#include <QGraphicsOpacityEffect>
+#include <QGraphicsScale>
 #include "CueParser.h"
 #include "TrackItem.h"
 #include <QDragEnterEvent>
@@ -290,6 +294,93 @@ MusicPlayer::MusicPlayer(QWidget *parent)
     connect(m_fullscreenPlayer, &FullscreenPlayer::likeToggleRequested, this, [this]() {
         onLikeButtonClicked();
     });
+    connect(m_fullscreenPlayer, &FullscreenPlayer::closeRequested, this, [this]() {
+        if (m_isFsAnimating) return;
+        m_isFsAnimating = true;
+
+        auto scaleRect = [](const QRect &r, float scale) {
+            int nw = qRound(r.width() * scale);
+            int nh = qRound(r.height() * scale);
+            int dx = (r.width() - nw) / 2;
+            int dy = (r.height() - nh) / 2;
+            return r.adjusted(dx, dy, -dx, -dy);
+        };
+
+        // 1. Prepare FS Snapshot
+        QPixmap fsPix = m_fullscreenPlayer->grab();
+        m_fullscreenPlayer->hide(); // Hide live player
+
+        QLabel *fsSnapLabel = new QLabel(centralWidget());
+        fsSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        fsSnapLabel->setPixmap(fsPix);
+        fsSnapLabel->setScaledContents(true);
+        fsSnapLabel->setGeometry(rect());
+        fsSnapLabel->show();
+
+        QGraphicsOpacityEffect *fsOpEffect = new QGraphicsOpacityEffect(fsSnapLabel);
+        fsOpEffect->setOpacity(1.0);
+        fsSnapLabel->setGraphicsEffect(fsOpEffect);
+
+        // 2. Prepare Main UI Snapshot
+        m_mainUiContainer->setGeometry(rect());
+        QPixmap mainPix = m_mainUiContainer->grab();
+        
+        QLabel *mainSnapLabel = new QLabel(centralWidget());
+        mainSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        mainSnapLabel->setPixmap(mainPix);
+        mainSnapLabel->setScaledContents(true);
+        mainSnapLabel->setGeometry(scaleRect(rect(), 0.85f)); // Start shrunk
+        mainSnapLabel->show();
+
+        QGraphicsBlurEffect *blurEffect = new QGraphicsBlurEffect(mainSnapLabel);
+        blurEffect->setBlurRadius(30.0); // Start fully blurred
+        blurEffect->setBlurHints(QGraphicsBlurEffect::AnimationHint);
+        mainSnapLabel->setGraphicsEffect(blurEffect);
+
+        mainSnapLabel->lower(); // keep behind FS
+        fsSnapLabel->raise(); // keep in front
+
+        // 3. Animations
+        QParallelAnimationGroup *group = new QParallelAnimationGroup(this);
+
+        QPropertyAnimation *fsGeomAnim = new QPropertyAnimation(fsSnapLabel, "geometry");
+        fsGeomAnim->setDuration(300);
+        fsGeomAnim->setStartValue(rect());
+        fsGeomAnim->setEndValue(scaleRect(rect(), 1.15f));
+        fsGeomAnim->setEasingCurve(QEasingCurve::InOutCubic);
+        group->addAnimation(fsGeomAnim);
+
+        QPropertyAnimation *fsAlphaAnim = new QPropertyAnimation(fsOpEffect, "opacity");
+        fsAlphaAnim->setDuration(300);
+        fsAlphaAnim->setStartValue(1.0);
+        fsAlphaAnim->setEndValue(0.0);
+        fsAlphaAnim->setEasingCurve(QEasingCurve::InOutCubic);
+        group->addAnimation(fsAlphaAnim);
+
+        QPropertyAnimation *mainGeomAnim = new QPropertyAnimation(mainSnapLabel, "geometry");
+        mainGeomAnim->setDuration(300);
+        mainGeomAnim->setStartValue(scaleRect(rect(), 0.85f));
+        mainGeomAnim->setEndValue(rect());
+        mainGeomAnim->setEasingCurve(QEasingCurve::InOutCubic);
+        group->addAnimation(mainGeomAnim);
+
+        QPropertyAnimation *blurAnim = new QPropertyAnimation(blurEffect, "blurRadius");
+        blurAnim->setDuration(300);
+        blurAnim->setStartValue(30.0);
+        blurAnim->setEndValue(0.0);
+        blurAnim->setEasingCurve(QEasingCurve::InOutCubic);
+        group->addAnimation(blurAnim);
+
+        connect(group, &QParallelAnimationGroup::finished, [this, mainSnapLabel, fsSnapLabel]() {
+            m_isFsAnimating = false;
+            m_mainUiContainer->show();
+            m_fullscreenPlayer->clearFocus();
+            mainSnapLabel->deleteLater();
+            fsSnapLabel->deleteLater();
+        });
+
+        group->start(QAbstractAnimation::DeleteWhenStopped);
+    });
     m_fullscreenPlayer->updateShuffleState(m_shuffleEnabled, m_shuffleMode);
     m_fullscreenPlayer->updateRepeatState(m_repeatMode);
     m_fullscreenPlayer->updateLikeState(false);
@@ -386,6 +477,15 @@ void MusicPlayer::setupUI()
     QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
     mainLayout->setSpacing(0);
     mainLayout->setContentsMargins(0, 0, 0, 0);
+
+    // --- Container for main UI to allow scaling and blurring ---
+    m_mainUiContainer = new QWidget(centralWidget);
+    m_mainUiContainer->setObjectName("mainUiContainer");
+    m_mainUiContainer->setAttribute(Qt::WA_StyledBackground);
+    m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; }");
+    QVBoxLayout *containerLayout = new QVBoxLayout(m_mainUiContainer);
+    containerLayout->setSpacing(0);
+    containerLayout->setContentsMargins(0, 0, 0, 0);
 
     // ========== SPLITTER: sidebar | content ==========
     m_splitter = new QSplitter(Qt::Horizontal);
@@ -549,7 +649,7 @@ void MusicPlayer::setupUI()
     m_splitter->setStretchFactor(1, 1);
     m_splitter->setSizes({180, 1020});
 
-    mainLayout->addWidget(m_splitter, 1);
+    containerLayout->addWidget(m_splitter, 1);
 
     // ========== BOTTOM PLAYER BAR ==========
     QWidget *bottomBar = new QWidget();
@@ -580,7 +680,8 @@ void MusicPlayer::setupUI()
     trackInfoLayout->setContentsMargins(0, 0, 0, 0);
     m_titleLabel = new MarqueeLabel();
     m_titleLabel->setFixedWidth(200);
-    { QFont f; f.setPixelSize(13); f.setBold(true);
+    { QFont f; f.setPixelSize(13);
+      f.setVariableAxis("wght", 700.0f); // Точный Bold
       m_titleLabel->setTextStyle(f, QColor(255,255,255,255)); }
     m_titleLabel->setText("No track playing");
 
@@ -706,7 +807,8 @@ void MusicPlayer::setupUI()
 
     bottomLayout->addLayout(seekRow);
 
-    mainLayout->addWidget(bottomBar);
+    containerLayout->addWidget(bottomBar);
+    mainLayout->addWidget(m_mainUiContainer, 1);
 
     m_bottomGlow = new CornerGlowWidget(centralWidget);
     m_bottomGlow->resize(800, 600); // Larger glow area
@@ -2080,8 +2182,92 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             int  pos     = m_positionSlider->value();
             int  vol     = m_volumeSlider->value();
 
+            if (m_isFsAnimating) return true;
+            m_isFsAnimating = true;
+
+            // 1. Prepare Main UI Snapshot
+            QPixmap mainPix = m_mainUiContainer->grab();
+            QLabel *mainSnapLabel = new QLabel(centralWidget());
+            mainSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+            mainSnapLabel->setPixmap(mainPix);
+            mainSnapLabel->setScaledContents(true);
+            mainSnapLabel->setGeometry(rect());
+            mainSnapLabel->show();
+            m_mainUiContainer->hide();
+
+            QGraphicsBlurEffect *blurEffect = new QGraphicsBlurEffect(mainSnapLabel);
+            blurEffect->setBlurRadius(0);
+            blurEffect->setBlurHints(QGraphicsBlurEffect::AnimationHint);
+            mainSnapLabel->setGraphicsEffect(blurEffect);
+
+            // 2. Prepare FS Snapshot
             m_fullscreenPlayer->setGeometry(rect());
+            m_fullscreenPlayer->setOpenAlpha(1.0); // Full opaque for snapshot
             m_fullscreenPlayer->openFor(cover, title, artist, album, dur, pos, playing, vol);
+            QPixmap fsPix = m_fullscreenPlayer->grab();
+            m_fullscreenPlayer->hide(); // Keep real player hidden until end
+
+            QLabel *fsSnapLabel = new QLabel(centralWidget());
+            fsSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+            fsSnapLabel->setPixmap(fsPix);
+            fsSnapLabel->setScaledContents(true);
+            fsSnapLabel->show();
+            fsSnapLabel->raise();
+
+            QGraphicsOpacityEffect *fsOpEffect = new QGraphicsOpacityEffect(fsSnapLabel);
+            fsOpEffect->setOpacity(0.0);
+            fsSnapLabel->setGraphicsEffect(fsOpEffect);
+
+            // 3. Animations
+            auto scaleRect = [](const QRect &r, float scale) {
+                int nw = qRound(r.width() * scale);
+                int nh = qRound(r.height() * scale);
+                int dx = (r.width() - nw) / 2;
+                int dy = (r.height() - nh) / 2;
+                return r.adjusted(dx, dy, -dx, -dy);
+            };
+
+            QParallelAnimationGroup *group = new QParallelAnimationGroup(this);
+
+            QPropertyAnimation *mainGeomAnim = new QPropertyAnimation(mainSnapLabel, "geometry");
+            mainGeomAnim->setDuration(300);
+            mainGeomAnim->setStartValue(rect());
+            mainGeomAnim->setEndValue(scaleRect(rect(), 0.85f)); 
+            mainGeomAnim->setEasingCurve(QEasingCurve::InOutCubic);
+            group->addAnimation(mainGeomAnim);
+
+            QPropertyAnimation *blurAnim = new QPropertyAnimation(blurEffect, "blurRadius");
+            blurAnim->setDuration(300);
+            blurAnim->setStartValue(0.0);
+            blurAnim->setEndValue(30.0);
+            blurAnim->setEasingCurve(QEasingCurve::InOutCubic);
+            group->addAnimation(blurAnim);
+
+            QPropertyAnimation *fsGeomAnim = new QPropertyAnimation(fsSnapLabel, "geometry");
+            fsGeomAnim->setDuration(300);
+            fsGeomAnim->setStartValue(scaleRect(rect(), 1.15f)); 
+            fsGeomAnim->setEndValue(rect()); 
+            fsGeomAnim->setEasingCurve(QEasingCurve::InOutCubic);
+            group->addAnimation(fsGeomAnim);
+
+            QPropertyAnimation *fsAlphaAnim = new QPropertyAnimation(fsOpEffect, "opacity");
+            fsAlphaAnim->setDuration(300);
+            fsAlphaAnim->setStartValue(0.0);
+            fsAlphaAnim->setEndValue(1.0);
+            fsAlphaAnim->setEasingCurve(QEasingCurve::InOutCubic);
+            group->addAnimation(fsAlphaAnim);
+
+            connect(group, &QParallelAnimationGroup::finished, [this, mainSnapLabel, fsSnapLabel]() {
+                m_isFsAnimating = false;
+                m_fullscreenPlayer->setGeometry(rect());
+                m_fullscreenPlayer->show();
+                m_fullscreenPlayer->raise();
+                
+                mainSnapLabel->deleteLater();
+                fsSnapLabel->deleteLater();
+            });
+
+            group->start(QAbstractAnimation::DeleteWhenStopped);
             return true;
         }
     }
@@ -2214,7 +2400,10 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     if (m_bottomGlow) {
         m_bottomGlow->move(0, centralWidget()->height() - m_bottomGlow->height());
     }
-    if (m_fullscreenPlayer)
+    if (m_blurLabel && m_blurLabel->isVisible() && !m_isFsAnimating) {
+        m_blurLabel->setGeometry(centralWidget()->rect());
+    }
+    if (m_fullscreenPlayer && !m_isFsAnimating)
         m_fullscreenPlayer->setGeometry(rect());
 }
 
@@ -3995,7 +4184,11 @@ void MusicPlayer::updatePlaylistHighlight()
         bool isPlayingTrack = (trackIndex == playingTrackIndex && playingTrackIndex >= 0);
 
         QFont font;
-        font.setBold(isCurrent);
+        if (isCurrent) {
+            font.setVariableAxis("wght", 900.0f); // Тот самый 900
+        } else {
+            font.setVariableAxis("wght", 400.0f); // Regular
+        }
 
         for (int col = 0; col < m_playlistTable->columnCount(); ++col) {
             QTableWidgetItem *item = m_playlistTable->item(row, col);
