@@ -295,7 +295,7 @@ MusicPlayer::MusicPlayer(QWidget *parent)
         onLikeButtonClicked();
     });
     connect(m_fullscreenPlayer, &FullscreenPlayer::closeRequested, this, [this]() {
-        if (m_isFsAnimating) return;
+        if (m_isFsAnimating || !m_fullscreenPlayer->isVisible()) return;
         m_isFsAnimating = true;
 
         auto scaleRect = [](const QRect &r, float scale) {
