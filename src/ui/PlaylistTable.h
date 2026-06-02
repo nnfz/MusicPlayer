@@ -48,7 +48,9 @@ private:
     void tickSmoothScroll();
     int rightmostVisibleLogicalIndex() const;
     int rightmostVisibleVisualIndex() const;
+    void updateTimerIntervals();
 
+    int m_refreshRate = 60;
     int m_hoveredRow = -1;
     int m_playingRow = -1;
     int m_dropIndicatorRow = -1;

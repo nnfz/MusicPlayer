@@ -10,6 +10,8 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 #include <QTimer>
+#include <QScreen>
+#include <QGuiApplication>
 #include <algorithm>
 
 PlaylistTable::PlaylistTable(QWidget *parent)
@@ -57,6 +59,22 @@ PlaylistTable::PlaylistTable(QWidget *parent)
     m_scrollTimer->setTimerType(Qt::PreciseTimer);
     m_scrollTimer->setInterval(8);
     connect(m_scrollTimer, &QTimer::timeout, this, &PlaylistTable::tickSmoothScroll);
+    updateTimerIntervals();
+}
+
+void PlaylistTable::updateTimerIntervals()
+{
+    m_refreshRate = 60;
+    if (auto *sc = screen()) {
+        m_refreshRate = qRound(sc->refreshRate());
+    } else if (auto *appSc = QGuiApplication::primaryScreen()) {
+        m_refreshRate = qRound(appSc->refreshRate());
+    }
+    if (m_refreshRate <= 0) m_refreshRate = 60;
+
+    int interval = 1000 / m_refreshRate;
+    if (interval < 1) interval = 1;
+    if (m_scrollTimer) m_scrollTimer->setInterval(interval);
 }
 
 void PlaylistTable::snapshotIdealWidths()
@@ -280,6 +298,7 @@ void PlaylistTable::applyIdealWidths()
 void PlaylistTable::resizeEvent(QResizeEvent *event)
 {
     QTableWidget::resizeEvent(event);
+    updateTimerIntervals();
     applyIdealWidths();
 }
 
@@ -357,7 +376,7 @@ void PlaylistTable::tickSmoothScroll()
         return;
     }
 
-    qint64 dt = m_scrollClock.isValid() ? m_scrollClock.restart() : 16;
+    qint64 dt = m_scrollClock.isValid() ? m_scrollClock.restart() : (1000 / m_refreshRate);
     dt = qMax<qint64>(1, qMin<qint64>(dt, 40));
 
     int rowH = rowCount() > 0 ? rowHeight(0) : 0;

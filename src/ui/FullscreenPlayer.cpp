@@ -18,6 +18,9 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLBuffer>
 #include <QVector>
+#include <QScreen>
+#include <QWindow>
+#include <QGuiApplication>
 #include <QListWidget>
 #include <QScrollBar>
 #include <QStyledItemDelegate>
@@ -506,19 +509,23 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     setFocusPolicy(Qt::StrongFocus);
     hide();
 
-    m_animTimer = new QTimer(this);
-    m_animTimer->setTimerType(Qt::PreciseTimer);
-    m_animTimer->setInterval(1);
-    connect(m_animTimer, &QTimer::timeout, this, &FullscreenPlayer::animateTick);
+    m_animTimer = new QVariantAnimation(this);
+    m_animTimer->setStartValue(0.0f);
+    m_animTimer->setEndValue(1.0f);
+    m_animTimer->setDuration(10000);
+    m_animTimer->setLoopCount(-1);
+    connect(m_animTimer, &QVariantAnimation::valueChanged, this, [this](const QVariant&) { animateTick(); });
 
     m_hideControlsTimer = new QTimer(this);
     m_hideControlsTimer->setSingleShot(true);
     connect(m_hideControlsTimer, &QTimer::timeout, this, &FullscreenPlayer::hideControls);
 
-    m_lyricsScrollTimer = new QTimer(this);
-    m_lyricsScrollTimer->setTimerType(Qt::PreciseTimer);
-    m_lyricsScrollTimer->setInterval(8);
-    connect(m_lyricsScrollTimer, &QTimer::timeout, this, &FullscreenPlayer::tickLyricsSmoothScroll);
+    m_lyricsScrollTimer = new QVariantAnimation(this);
+    m_lyricsScrollTimer->setStartValue(0.0f);
+    m_lyricsScrollTimer->setEndValue(1.0f);
+    m_lyricsScrollTimer->setDuration(10000);
+    m_lyricsScrollTimer->setLoopCount(-1);
+    connect(m_lyricsScrollTimer, &QVariantAnimation::valueChanged, this, [this](const QVariant&) { tickLyricsSmoothScroll(); });
 
     m_bgWidget = new FullscreenBackgroundGL(this);
     m_bgWidget->setGeometry(rect());
@@ -766,6 +773,8 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
             animateLyricsScrollTo(m_lyricsCurrentIndex, true, false);
         }
     });
+
+    updateTimerIntervals();
 }
 
 FullscreenPlayer::~FullscreenPlayer()
@@ -810,7 +819,7 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
 
                         if (delta != 0) {
                             const int current = bar->value();
-                            const int baseTarget = (m_lyricsScrollTimer && m_lyricsScrollTimer->isActive())
+                            const int baseTarget = (m_lyricsScrollTimer && m_lyricsScrollTimer->state() == QAbstractAnimation::Running)
                                 ? m_lyricsScrollTarget
                                 : current;
                             int target = baseTarget - delta;
@@ -818,7 +827,7 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
                             m_lyricsScrollTarget = target;
                             m_lyricsScrollVelocity = 0.f;
 
-                            if (m_lyricsScrollTimer && !m_lyricsScrollTimer->isActive()) {
+                            if (m_lyricsScrollTimer && m_lyricsScrollTimer->state() != QAbstractAnimation::Running) {
                                 m_lyricsScrollClock.restart();
                                 m_lyricsScrollTimer->start();
                             }
@@ -892,6 +901,7 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
                                 const QString &album, int durationMs, int positionMs,
                                 bool isPlaying, int volume)
 {
+    updateTimerIntervals();
     m_rawCover        = cover;
     m_durationMs      = durationMs;
     m_trackTitle      = title;
@@ -988,7 +998,6 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
 
 void FullscreenPlayer::closeOverlay()
 {
-    if (!m_isOpen) return;
     m_isOpen = false;
     releaseKeyboard();
 
@@ -1418,7 +1427,7 @@ void FullscreenPlayer::animateLyricsScrollTo(int logicalIndex, bool force, bool 
         return;
     }
     m_lyricsScrollTarget = target;
-    if (m_lyricsScrollTimer && !m_lyricsScrollTimer->isActive()) {
+    if (m_lyricsScrollTimer && m_lyricsScrollTimer->state() != QAbstractAnimation::Running) {
         m_lyricsScrollClock.restart();
         m_lyricsScrollTimer->start();
     }
@@ -1440,7 +1449,7 @@ void FullscreenPlayer::tickLyricsSmoothScroll()
         return;
     }
 
-    qint64 dt = m_lyricsScrollClock.isValid() ? m_lyricsScrollClock.restart() : 16;
+    qint64 dt = m_lyricsScrollClock.isValid() ? m_lyricsScrollClock.restart() : (1000 / m_refreshRate);
     dt = qMax<qint64>(1, qMin<qint64>(dt, 40));
     const float dtSec = (float)dt / 1000.f;
 
@@ -1562,6 +1571,7 @@ void FullscreenPlayer::paintEvent(QPaintEvent *e)
 void FullscreenPlayer::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
+    updateTimerIntervals();
     if (m_bgWidget) {
         m_bgWidget->move(0, 0);
         m_bgWidget->resize(size());
@@ -1697,6 +1707,18 @@ void FullscreenPlayer::hideControls()
     }
 }
 
+void FullscreenPlayer::updateTimerIntervals()
+{
+    m_refreshRate = 60;
+    if (auto *sc = screen()) {
+        m_refreshRate = qRound(sc->refreshRate());
+    } else if (auto *appSc = QGuiApplication::primaryScreen()) {
+        m_refreshRate = qRound(appSc->refreshRate());
+    }
+    if (m_refreshRate <= 0) m_refreshRate = 60;
+    // QVariantAnimation is synchronized to the screen refresh rate automatically.
+}
+
 void FullscreenPlayer::updateState()
 {
     double tx = m_lyricsVisible ? -260.0 : (m_stateHinted ? -50.0 : 0.0);
@@ -1743,7 +1765,7 @@ void FullscreenPlayer::animateTick()
     m_lastFrameMs      = now;
     const float dt     = qBound(0.001f, dtRaw, 0.05f);
 
-    m_phase += 0.015f * m_animationSpeed * (dt / 0.016f);
+    m_phase += 0.015f * m_animationSpeed * (dt * 60.0f);
     if (m_bgWidget) m_bgWidget->setTime(m_phase);
 
     // Higher stiffness for faster, more responsive animations

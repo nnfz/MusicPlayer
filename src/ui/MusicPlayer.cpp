@@ -338,6 +338,7 @@ MusicPlayer::MusicPlayer(QWidget *parent)
         mainSnapLabel->setGraphicsEffect(blurEffect);
 
         mainSnapLabel->lower(); // keep behind FS
+        if (m_bottomGlow) m_bottomGlow->lower(); // keep glow behind main UI snapshot
         fsSnapLabel->raise(); // keep in front
 
         // 3. Animations
