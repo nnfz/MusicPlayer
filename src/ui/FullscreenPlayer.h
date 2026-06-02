@@ -265,9 +265,9 @@ private:
     QVariantAnimation       *m_paletteTransitionAnim { nullptr };
     QVariantAnimation       *m_speedPulseAnim { nullptr };
 
-    QVariantAnimation     *m_animTimer          { nullptr };
+    QTimer                *m_animTimer          { nullptr };
     QTimer                *m_hideControlsTimer  { nullptr };
-    QVariantAnimation     *m_lyricsScrollTimer  { nullptr };
+    QTimer                *m_lyricsScrollTimer  { nullptr };
     QElapsedTimer          m_frameTimer;
     QElapsedTimer          m_lyricsScrollClock;
     qint64                 m_lastFrameMs { 0 };
