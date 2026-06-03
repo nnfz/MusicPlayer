@@ -547,16 +547,21 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     QHBoxLayout *tbl = new QHBoxLayout(m_titleBar);
     tbl->setContentsMargins(12, 0, 24, 0);
 
-    auto makeTitleBtn = [&](const QString &txt) {
+    auto makeTitleBtn = [&](const QString &iconPath, const QString &fallbackTxt) {
         auto *b = new AnimatedScaleButton(m_titleBar);
         b->setFixedSize(48, 48);
         b->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.75);font-size:26px;}QPushButton:hover{color:white;}");
         b->setCursor(Qt::PointingHandCursor);
-        b->setText(txt);
+        if (!iconPath.isEmpty()) {
+            b->setIcon(QIcon(iconPath));
+            b->setIconSize(QSize(24, 24));
+        } else {
+            b->setText(fallbackTxt);
+        }
         return b;
     };
 
-    QPushButton *downBtn = makeTitleBtn(QString::fromUtf8("\xE2\x9C\x95"));
+    QPushButton *downBtn = makeTitleBtn(":/icons/closefullscreen.svg", QString::fromUtf8("\xE2\x9C\x95"));
     connect(downBtn, &QPushButton::clicked, this, &FullscreenPlayer::closeOverlay);
     tbl->addWidget(downBtn);
     tbl->addStretch();
@@ -595,7 +600,8 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsHint = new AnimatedScaleButton(m_rootLayout);
     m_lyricsHint->setFixedSize(44, 44);
     m_lyricsHint->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.75);font-size:28px;}");
-    m_lyricsHint->setText(QString::fromUtf8("\xE2\x98\xB0"));
+    m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));
+    m_lyricsHint->setIconSize(QSize(24, 24));
     m_lyricsHint->setCursor(Qt::PointingHandCursor);
     m_lyricsHintOpacityEffect = new QGraphicsOpacityEffect(m_lyricsHint);
     m_lyricsHintOpacityEffect->setOpacity(0.0);
@@ -655,20 +661,25 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     QHBoxLayout *bl = new QHBoxLayout(m_playbackControls);
     bl->setContentsMargins(24, 0, 24, 10);
 
-    auto makeCtrlBtn = [&](const QString &txt, int sz, bool fixedSz = false) {
+    auto makeCtrlBtn = [&](const QString &iconPath, const QString &fallbackTxt, int iconSz, bool fixedSz = false) {
         auto *b = new AnimatedScaleButton(m_playbackControls);
-        b->setStyleSheet(QString("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:%1px;}QPushButton:hover{color:white;}").arg(sz));
+        b->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);}QPushButton:hover{color:white;}");
         b->setCursor(Qt::PointingHandCursor);
-        b->setText(txt);
+        if (!iconPath.isEmpty()) {
+            b->setIcon(QIcon(iconPath));
+            b->setIconSize(QSize(iconSz, iconSz));
+        } else {
+            b->setText(fallbackTxt);
+        }
         if (fixedSz) b->setFixedSize(48, 48);
         return b;
     };
 
-    m_shuffleBtn = makeCtrlBtn(QString::fromUtf8("\xE2\xBF\x80"), 20);
-    m_prevBtn    = makeCtrlBtn(QString::fromUtf8("\xE2\x8F\xAE"), 22);
-    m_playBtn    = makeCtrlBtn(QString::fromUtf8("\xE2\x96\xB6"), 32, true);
-    m_nextBtn    = makeCtrlBtn(QString::fromUtf8("\xE2\x8F\xAD"), 22);
-    m_repeatBtn  = makeCtrlBtn(QString::fromUtf8("\xE2\xBF\x81"), 20);
+    m_shuffleBtn = makeCtrlBtn(":/icons/shuffle.svg", QString::fromUtf8("\xE2\xBF\x80"), 24);
+    m_prevBtn    = makeCtrlBtn(":/icons/playbackward.svg", QString::fromUtf8("\xE2\x8F\xAE"), 24);
+    m_playBtn    = makeCtrlBtn(":/icons/play.svg", QString::fromUtf8("\xE2\x96\xB6"), 32, true);
+    m_nextBtn    = makeCtrlBtn(":/icons/playforward.svg", QString::fromUtf8("\xE2\x8F\xAD"), 24);
+    m_repeatBtn  = makeCtrlBtn(":/icons/repeat.svg", QString::fromUtf8("\xE2\xBF\x81"), 24);
 
     QWidget *leftSpacer = new QWidget(m_playbackControls);
     leftSpacer->setFixedWidth(120);
@@ -688,7 +699,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     QHBoxLayout *volRow = new QHBoxLayout();
     volRow->setContentsMargins(0,0,0,0);
     volRow->setSpacing(10);
-    m_muteBtn = makeCtrlBtn(QString::fromUtf8("\xF0\x9F\x94\x8A"), 16);
+    m_muteBtn = makeCtrlBtn("", QString::fromUtf8("\xF0\x9F\x94\x8A"), 16);
     m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_playbackControls);
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setFixedWidth(80);
@@ -1061,7 +1072,13 @@ void FullscreenPlayer::updatePosition(int ms)
 void FullscreenPlayer::updatePlayState(bool playing)
 {
     m_isPlaying = playing;
-    m_playBtn->setText(playing ? QString::fromUtf8("\xE2\x8F\xB8") : QString::fromUtf8("\xE2\x96\xB6"));
+    if (playing) {
+        m_playBtn->setIcon(QIcon());
+        m_playBtn->setText(QString::fromUtf8("\xE2\x8F\xB8"));
+    } else {
+        m_playBtn->setText(QString());
+        m_playBtn->setIcon(QIcon(":/icons/play.svg"));
+    }
     m_positionAnchorPlaying  = playing;
     m_positionAnchorWallMs   = QDateTime::currentMSecsSinceEpoch();
     m_positionAnchorAudioMs  = m_lastPositionMs;
@@ -1736,7 +1753,13 @@ void FullscreenPlayer::updateState()
     m_lyricsPanelXTarget = m_lyricsVisible ? lyricsPanelVisibleX : (float)width();
     
     m_hintAlphaTarget = (m_stateHinted || m_lyricsVisible) ? 1.f : 0.f;
-    m_lyricsHint->setText(m_lyricsVisible ? QString::fromUtf8("\xE2\x9C\x95") : QString::fromUtf8("\xE2\x98\xB0"));
+    if (m_lyricsVisible) {
+        m_lyricsHint->setIcon(QIcon(":/icons/closefullscreen.svg"));
+        m_lyricsHint->setText(QString());
+    } else {
+        m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));
+        m_lyricsHint->setText(QString());
+    }
     m_hintXTarget = (float)(width() - m_lyricsHint->width() - 24 + ((m_stateHinted || m_lyricsVisible) ? 0 : 20));
 }
 

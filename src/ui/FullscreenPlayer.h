@@ -96,20 +96,24 @@ protected:
         m_anim->stop(); m_anim->setEndValue(rect().contains(e->pos()) ? 1.15f : 1.0f); m_anim->start();
     }
     void paintEvent(QPaintEvent *e) override {
-        if (qFuzzyCompare(m_scale, 1.0f)) {
-            QPushButton::paintEvent(e);
-            return;
-        }
+        Q_UNUSED(e);
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
+        
         p.translate(rect().center());
         p.scale(m_scale, m_scale);
         p.translate(-rect().center());
 
-        QStyleOptionButton opt;
-        initStyleOption(&opt);
-        style()->drawControl(QStyle::CE_PushButton, &opt, &p, this);
+        if (!icon().isNull()) {
+            QPixmap pix = icon().pixmap(iconSize(), isEnabled() ? (underMouse() ? QIcon::Active : QIcon::Normal) : QIcon::Disabled, isDown() ? QIcon::On : QIcon::Off);
+            QRect iconRect(rect().center() - pix.rect().center(), pix.size());
+            p.drawPixmap(iconRect, pix);
+        } else if (!text().isEmpty()) {
+            p.setPen(palette().color(QPalette::ButtonText));
+            p.setFont(font());
+            p.drawText(rect(), Qt::AlignCenter, text());
+        }
     }
 private:
     float m_scale = 1.0f;
