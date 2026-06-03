@@ -9,5 +9,7 @@
         <file>icons/repeatplaylist.svg</file>
         <file>icons/shuffle.svg</file>
         <file>icons/text.svg</file>
+        <file>icons/pause.svg</file>
+        <file>icons/textclose.svg</file>
     </qresource>
 </RCC>

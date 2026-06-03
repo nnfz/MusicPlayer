@@ -509,17 +509,9 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     setFocusPolicy(Qt::StrongFocus);
     hide();
 
-    m_animTimer = new QTimer(this);
-    m_animTimer->setTimerType(Qt::PreciseTimer);
-    connect(m_animTimer, &QTimer::timeout, this, &FullscreenPlayer::animateTick);
-
     m_hideControlsTimer = new QTimer(this);
     m_hideControlsTimer->setSingleShot(true);
     connect(m_hideControlsTimer, &QTimer::timeout, this, &FullscreenPlayer::hideControls);
-
-    m_lyricsScrollTimer = new QTimer(this);
-    m_lyricsScrollTimer->setTimerType(Qt::PreciseTimer);
-    connect(m_lyricsScrollTimer, &QTimer::timeout, this, &FullscreenPlayer::tickLyricsSmoothScroll);
 
     m_bgWidget = new FullscreenBackgroundGL(this);
     m_bgWidget->setGeometry(rect());
@@ -601,7 +593,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsHint->setFixedSize(44, 44);
     m_lyricsHint->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.75);font-size:28px;}");
     m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));
-    m_lyricsHint->setIconSize(QSize(24, 24));
+    m_lyricsHint->setIconSize(QSize(48, 48));
     m_lyricsHint->setCursor(Qt::PointingHandCursor);
     m_lyricsHintOpacityEffect = new QGraphicsOpacityEffect(m_lyricsHint);
     m_lyricsHintOpacityEffect->setOpacity(0.0);
@@ -778,14 +770,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
             animateLyricsScrollTo(m_lyricsCurrentIndex, true, false);
         }
     });
-
-    updateTimerIntervals();
 }
 
 FullscreenPlayer::~FullscreenPlayer()
 {
-    if (m_animTimer) m_animTimer->stop();
-    if (m_lyricsScrollTimer) m_lyricsScrollTimer->stop();
 }
 
 bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
@@ -824,7 +812,7 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
 
                         if (delta != 0) {
                             const int current = bar->value();
-                            const int baseTarget = (m_lyricsScrollTimer && m_lyricsScrollTimer->isActive())
+                            const int baseTarget = m_lyricsScrollActive
                                 ? m_lyricsScrollTarget
                                 : current;
                             int target = baseTarget - delta;
@@ -832,9 +820,9 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
                             m_lyricsScrollTarget = target;
                             m_lyricsScrollVelocity = 0.f;
 
-                            if (m_lyricsScrollTimer && !m_lyricsScrollTimer->isActive()) {
+                            if (!m_lyricsScrollActive) {
                                 m_lyricsScrollClock.restart();
-                                m_lyricsScrollTimer->start();
+                                m_lyricsScrollActive = true;
                             }
 
                             we->accept();
@@ -906,7 +894,6 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
                                 const QString &album, int durationMs, int positionMs,
                                 bool isPlaying, int volume)
 {
-    updateTimerIntervals();
     m_rawCover        = cover;
     m_durationMs      = durationMs;
     m_trackTitle      = title;
@@ -969,7 +956,7 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     m_controlsYTarget   = m_controlsY;
     m_controlsYVelocity = 0.f;
 
-    if (m_lyricsScrollTimer) m_lyricsScrollTimer->stop();
+    m_lyricsScrollActive = false;
     m_lyricsScrollTarget   = 0;
     m_lyricsScrollVelocity = 0.f;
 
@@ -996,9 +983,9 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     }
 
     m_frameTimer.start();
-    m_lastFrameMs = 0;
-    m_animTimer->start();
+    m_lastFrameMs = m_frameTimer.elapsed();
     m_isOpen = true;
+    update();
 }
 
 void FullscreenPlayer::closeOverlay()
@@ -1006,7 +993,7 @@ void FullscreenPlayer::closeOverlay()
     m_isOpen = false;
     releaseKeyboard();
 
-    if (m_lyricsScrollTimer) m_lyricsScrollTimer->stop();
+    m_lyricsScrollActive = false;
 
     m_centerOffsetTarget     = m_centerOffset; 
 
@@ -1074,7 +1061,7 @@ void FullscreenPlayer::updatePlayState(bool playing)
     m_isPlaying = playing;
     if (playing) {
         m_playBtn->setIcon(QIcon());
-        m_playBtn->setText(QString::fromUtf8("\xE2\x8F\xB8"));
+        m_playBtn->setIcon(QIcon(":/icons/pause.svg"));
     } else {
         m_playBtn->setText(QString());
         m_playBtn->setIcon(QIcon(":/icons/play.svg"));
@@ -1346,7 +1333,7 @@ void FullscreenPlayer::updateLyricsHighlight(int ms)
     if (lyricsAutoScrollSuspended()) { m_lyricsAutoScrollSuppressed = true; return; }
     if (idx < 0) {
         if (auto *bar = m_lyricsList->verticalScrollBar()) {
-            if (m_lyricsScrollTimer) m_lyricsScrollTimer->stop();
+            m_lyricsScrollActive = false;
             m_lyricsScrollVelocity = 0.f;
             bar->setValue(bar->minimum());
             m_lyricsScrollTarget = bar->value();
@@ -1431,24 +1418,24 @@ void FullscreenPlayer::animateLyricsScrollTo(int logicalIndex, bool force, bool 
     if (target < 0) return;
     auto *bar = m_lyricsList->verticalScrollBar();
     if (instant) {
-        if (m_lyricsScrollTimer) m_lyricsScrollTimer->stop();
+        m_lyricsScrollActive = false;
         m_lyricsScrollVelocity = 0.f;
         if (bar) bar->setValue(target);
         m_lyricsScrollTarget = target;
         return;
     }
     m_lyricsScrollTarget = target;
-    if (m_lyricsScrollTimer && !m_lyricsScrollTimer->isActive()) {
+    if (!m_lyricsScrollActive) {
         m_lyricsScrollClock.restart();
-        m_lyricsScrollTimer->start();
+        m_lyricsScrollActive = true;
     }
 }
 
 void FullscreenPlayer::tickLyricsSmoothScroll()
 {
-    if (!m_lyricsList || !m_lyricsScrollTimer) return;
+    if (!m_lyricsList) return;
     auto *bar = m_lyricsList->verticalScrollBar();
-    if (!bar) { m_lyricsScrollTimer->stop(); return; }
+    if (!bar) { m_lyricsScrollActive = false; return; }
 
     const int current = bar->value();
     const int dist    = m_lyricsScrollTarget - current;
@@ -1456,11 +1443,11 @@ void FullscreenPlayer::tickLyricsSmoothScroll()
     if (qAbs(dist) <= 1) {
         bar->setValue(m_lyricsScrollTarget);
         m_lyricsScrollVelocity = 0.f;
-        m_lyricsScrollTimer->stop();
+        m_lyricsScrollActive = false;
         return;
     }
 
-    qint64 dt = m_lyricsScrollClock.isValid() ? m_lyricsScrollClock.restart() : (1000 / m_refreshRate);
+    qint64 dt = m_lyricsScrollClock.isValid() ? m_lyricsScrollClock.restart() : 16;
     dt = qMax<qint64>(1, qMin<qint64>(dt, 40));
     const float dtSec = (float)dt / 1000.f;
 
@@ -1577,12 +1564,18 @@ void FullscreenPlayer::extractPalette(const QPixmap &albumArt)
 void FullscreenPlayer::paintEvent(QPaintEvent *e)
 {
     QWidget::paintEvent(e);
+    if (m_isOpen) {
+        animateTick();
+        if (m_lyricsScrollActive) {
+            tickLyricsSmoothScroll();
+        }
+        update(); // Schedule next frame for perfect VSync-aligned animation
+    }
 }
 
 void FullscreenPlayer::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
-    updateTimerIntervals();
     if (m_bgWidget) {
         m_bgWidget->move(0, 0);
         m_bgWidget->resize(size());
@@ -1718,21 +1711,6 @@ void FullscreenPlayer::hideControls()
     }
 }
 
-void FullscreenPlayer::updateTimerIntervals()
-{
-    m_refreshRate = 60;
-    if (auto *sc = screen()) {
-        m_refreshRate = qRound(sc->refreshRate());
-    } else if (auto *appSc = QGuiApplication::primaryScreen()) {
-        m_refreshRate = qRound(appSc->refreshRate());
-    }
-    if (m_refreshRate <= 0) m_refreshRate = 60;
-    
-    int interval = 1000 / m_refreshRate;
-    if (m_animTimer) m_animTimer->setInterval(interval);
-    if (m_lyricsScrollTimer) m_lyricsScrollTimer->setInterval(interval);
-}
-
 void FullscreenPlayer::updateState()
 {
     double tx = m_lyricsVisible ? -260.0 : (m_stateHinted ? -50.0 : 0.0);
@@ -1754,7 +1732,7 @@ void FullscreenPlayer::updateState()
     
     m_hintAlphaTarget = (m_stateHinted || m_lyricsVisible) ? 1.f : 0.f;
     if (m_lyricsVisible) {
-        m_lyricsHint->setIcon(QIcon(":/icons/closefullscreen.svg"));
+        m_lyricsHint->setIcon(QIcon(":/icons/textclose.svg"));
         m_lyricsHint->setText(QString());
     } else {
         m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));

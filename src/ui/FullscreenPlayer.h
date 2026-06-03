@@ -216,14 +216,12 @@ private:
     void updateState();
     void showControls();
     void hideControls();
-    void updateTimerIntervals();
 
     QPointF springStep(QPointF current, QPointF target, QPointF &velocity, float dt, float stiffness, float damping);
     float   springStep1D(float current, float target, float &velocity, float dt, float stiffness, float damping);
 
     class FullscreenBackgroundGL;
 
-    int                   m_refreshRate         { 60 };
     QWidget               *m_rootLayout   { nullptr };
     QWidget               *m_titleBar     { nullptr };
     QWidget               *m_centerArea   { nullptr };
@@ -269,12 +267,11 @@ private:
     QVariantAnimation       *m_paletteTransitionAnim { nullptr };
     QVariantAnimation       *m_speedPulseAnim { nullptr };
 
-    QTimer                *m_animTimer          { nullptr };
     QTimer                *m_hideControlsTimer  { nullptr };
-    QTimer                *m_lyricsScrollTimer  { nullptr };
     QElapsedTimer          m_frameTimer;
     QElapsedTimer          m_lyricsScrollClock;
     qint64                 m_lastFrameMs { 0 };
+    bool                   m_lyricsScrollActive { false };
 
     qreal                  m_mainUiOpacity  { 1.0 };
     qreal                  m_controlsOpacity { 0.0 };
