@@ -228,7 +228,7 @@ private:
     QWidget               *m_lyricsPanel  { nullptr };
     QWidget               *m_playbackControls { nullptr };
     QWidget               *m_seekBarArea  { nullptr };
-    QPushButton           *m_lyricsHint   { nullptr };
+    AnimatedScaleButton   *m_lyricsHint   { nullptr };
 
     FullscreenBackgroundGL *m_bgWidget    { nullptr };
     QWidget               *m_dimOverlay   { nullptr };
@@ -245,15 +245,15 @@ private:
     QLabel                *m_currentTime  { nullptr };
     QLabel                *m_totalTime    { nullptr };
     ClickableSlider       *m_seekSlider   { nullptr };
-    QPushButton           *m_shuffleBtn   { nullptr };
-    QPushButton           *m_prevBtn      { nullptr };
-    QPushButton           *m_playBtn      { nullptr };
-    QPushButton           *m_nextBtn      { nullptr };
-    QPushButton           *m_repeatBtn    { nullptr };
-    QPushButton           *m_likeBtn      { nullptr };
-    QPushButton           *m_textBtn      { nullptr };
-    QPushButton           *m_closeBtn     { nullptr };
-    QPushButton           *m_muteBtn      { nullptr };
+    AnimatedScaleButton   *m_shuffleBtn   { nullptr };
+    AnimatedScaleButton   *m_prevBtn      { nullptr };
+    AnimatedScaleButton   *m_playBtn      { nullptr };
+    AnimatedScaleButton   *m_nextBtn      { nullptr };
+    AnimatedScaleButton   *m_repeatBtn    { nullptr };
+    AnimatedScaleButton   *m_likeBtn      { nullptr };
+    AnimatedScaleButton   *m_textBtn      { nullptr };
+    AnimatedScaleButton   *m_closeBtn     { nullptr };
+    AnimatedScaleButton   *m_muteBtn      { nullptr };
     ClickableSlider       *m_volumeSlider { nullptr };
     QListWidget           *m_lyricsList   { nullptr };
 

@@ -770,6 +770,11 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
             animateLyricsScrollTo(m_lyricsCurrentIndex, true, false);
         }
     });
+
+    // Ensure interactive elements are on top
+    m_lyricsHint->raise();
+    m_playbackControls->raise();
+    m_seekBarArea->raise();
 }
 
 FullscreenPlayer::~FullscreenPlayer()
@@ -851,6 +856,8 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
                         return true;
                     }
                 }
+                // Эффект нажатия при закрытии по клику в пустоту
+                m_lyricsHint->setScale(0.85f);
                 setLyricsVisible(false, true);
                 return true;
             }
@@ -1060,7 +1067,6 @@ void FullscreenPlayer::updatePlayState(bool playing)
 {
     m_isPlaying = playing;
     if (playing) {
-        m_playBtn->setIcon(QIcon());
         m_playBtn->setIcon(QIcon(":/icons/pause.svg"));
     } else {
         m_playBtn->setText(QString());
@@ -1100,7 +1106,14 @@ void FullscreenPlayer::updateRepeatState(int mode) {
 }
 
 bool FullscreenPlayer::hasLyrics() const { return m_lyricsSyncedAvailable || !m_lyricsPlainLines.isEmpty(); }
-void FullscreenPlayer::toggleLyrics() { if (!hasLyrics()) return; setLyricsVisible(!m_lyricsVisible, true, true); }
+void FullscreenPlayer::toggleLyrics() { 
+    if (!hasLyrics()) return; 
+    if (!m_lyricsVisible) {
+        // Эффект нажатия при открытии
+        m_lyricsHint->setScale(0.85f);
+    }
+    setLyricsVisible(!m_lyricsVisible, true, true); 
+}
 
 void FullscreenPlayer::requestLyrics()
 {
@@ -1352,14 +1365,6 @@ void FullscreenPlayer::setLyricsVisible(bool visible, bool animate, bool isUserA
     // Если это действие пользователя, запоминаем выбор
     if (isUserAction) {
         m_lyricsWasManuallyOpened = visible;
-    }
-
-    if (visible) {
-        m_stateHinted = false;
-        m_lyricsHintOpacityEffect->setOpacity(0.0);
-    } else {
-        m_lyricsHintOpacityEffect->setOpacity(m_stateHinted ? 1.0 : 0.0);
-        if (m_stateHinted) m_hintAlphaTarget = 1.0f;
     }
 
     updateState();
