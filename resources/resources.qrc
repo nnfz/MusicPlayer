@@ -11,5 +11,7 @@
         <file>icons/text.svg</file>
         <file>icons/pause.svg</file>
         <file>icons/textclose.svg</file>
+        <file>icons/norepeat.svg</file>
+        <file>icons/noshuffle.svg</file>
     </qresource>
 </RCC>
