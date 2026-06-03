@@ -595,9 +595,6 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));
     m_lyricsHint->setIconSize(QSize(48, 48));
     m_lyricsHint->setCursor(Qt::PointingHandCursor);
-    m_lyricsHintOpacityEffect = new QGraphicsOpacityEffect(m_lyricsHint);
-    m_lyricsHintOpacityEffect->setOpacity(0.0);
-    m_lyricsHint->setGraphicsEffect(m_lyricsHintOpacityEffect);
     connect(m_lyricsHint, &QPushButton::clicked, this, &FullscreenPlayer::toggleLyrics);
 
     m_lyricsPanel = new QWidget(m_rootLayout);
@@ -647,9 +644,6 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     pl->addWidget(m_seekSlider);
 
     m_playbackControls = new QWidget(m_rootLayout);
-    m_playbackControlsOpacityEffect = new QGraphicsOpacityEffect(m_playbackControls);
-    m_playbackControlsOpacityEffect->setOpacity(0.0);
-    m_playbackControls->setGraphicsEffect(m_playbackControlsOpacityEffect);
     QHBoxLayout *bl = new QHBoxLayout(m_playbackControls);
     bl->setContentsMargins(24, 0, 24, 10);
 
@@ -897,7 +891,7 @@ void FullscreenPlayer::setControlsOpacity(qreal v)
 {
     m_controlsOpacity = v;
     if (m_playbackControlsOpacityEffect) m_playbackControlsOpacityEffect->setOpacity(v);
-    m_playbackControls->setEnabled(v > 0.1);
+    m_playbackControls->setAttribute(Qt::WA_TransparentForMouseEvents, v <= 0.1);
 }
 
 void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const QString &artist,
@@ -947,14 +941,6 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
 
     m_lyricsPanelX         = m_lyricsVisible ? m_lyricsPanelXTarget : (float)width();
     m_lyricsPanelXVelocity = 0.f;
-
-    m_controlsAlpha         = 0.f;
-    m_controlsAlphaTarget   = 0.f;
-    m_controlsAlphaVelocity = 0.f;
-
-    m_hintAlpha         = 0.f;
-    m_hintAlphaTarget   = 0.f;
-    m_hintAlphaVelocity = 0.f;
 
     m_hintExtScale  = 1.0f;
     m_hintExtScaleV = 0.0f;
@@ -1101,6 +1087,11 @@ void FullscreenPlayer::updateVolume(int value)
 
 void FullscreenPlayer::updateLikeState(bool liked)      { Q_UNUSED(liked); }
 void FullscreenPlayer::updateShuffleState(bool enabled, int mode) {
+    if (enabled)
+        m_shuffleBtn->setIcon(QIcon(":/icons/shuffle.svg"));
+    else
+        m_shuffleBtn->setIcon(QIcon(":/icons/noshuffle.svg"));
+
     Q_UNUSED(mode);
     m_shuffleBtn->setStyleSheet(enabled
         ? "QPushButton{background:transparent;border:none;color:white;font-size:20px;}"
@@ -1675,7 +1666,6 @@ void FullscreenPlayer::updateLayout()
     m_centerArea->move(centerPos);
 
     m_lyricsHint->move(qRound(m_hintX), (h - m_lyricsHint->height())/2);
-    m_lyricsHintOpacityEffect->setOpacity((double)m_hintAlpha);
 
     QPoint targetCenterPos((w - m_centerArea->width())/2, (h - m_centerArea->height())/2);
     targetCenterPos += QPoint(-260, m_stateLifted ? -28 : 0);
@@ -1690,9 +1680,7 @@ void FullscreenPlayer::updateLayout()
 
     m_seekBarArea->setGeometry(0, h - sbH, w, sbH);
     m_playbackControls->setGeometry(0, qRound(m_controlsY), w, pcH);
-    m_playbackControlsOpacityEffect->setOpacity((double)m_controlsAlpha);
-    m_playbackControls->setEnabled(m_controlsAlpha > 0.1f);
-
+    
     if (m_titleBarOpacityEffect) m_titleBarOpacityEffect->setOpacity(1.0);
     if (m_seekBarOpacityEffect) m_seekBarOpacityEffect->setOpacity(1.0);
     
@@ -1741,7 +1729,6 @@ void FullscreenPlayer::updateState()
     const int sbH   = m_seekBarArea->sizeHint().height();
     const int baseY = height() - sbH - pcH;
     m_controlsYTarget     = m_stateLifted ? (float)baseY : (float)(baseY + 40);
-    m_controlsAlphaTarget = m_stateLifted ? 1.f : 0.f;
 
     m_centerArea->adjustSize();
     QPoint centerPos((width() - m_centerArea->width())/2, (height() - m_centerArea->height())/2);
@@ -1750,7 +1737,6 @@ void FullscreenPlayer::updateState()
     float lyricsPanelVisibleX = (float)(centerPos.x() + m_centerArea->width() + 10);
     m_lyricsPanelXTarget = m_lyricsVisible ? lyricsPanelVisibleX : (float)width();
     
-    m_hintAlphaTarget = (m_stateHinted || m_lyricsVisible) ? 1.f : 0.f;
     if (m_lyricsVisible) {
         m_lyricsHint->setIcon(QIcon(":/icons/textclose.svg"));
         m_lyricsHint->setText(QString());
@@ -1792,20 +1778,12 @@ void FullscreenPlayer::animateTick()
     static constexpr float kStiffF = 180.f;
     static constexpr float kDampF  = 20.f;
 
-    // Softer spring for alpha to avoid "nervous" transitions
-    static constexpr float kStiffAlpha = 80.f;
-    static constexpr float kDampAlpha  = 15.f;
-
     m_centerOffset = springStep(m_centerOffset, m_centerOffsetTarget, m_centerOffsetVelocity, dt, kStiff, kDamp);
 
     m_lyricsPanelX = springStep1D(m_lyricsPanelX, m_lyricsPanelXTarget, m_lyricsPanelXVelocity, dt, kStiffF, kDampF);
 
     m_controlsY     = springStep1D(m_controlsY,     m_controlsYTarget,     m_controlsYVelocity,     dt, kStiffF, kDampF);
-    m_controlsAlpha = springStep1D(m_controlsAlpha, m_controlsAlphaTarget, m_controlsAlphaVelocity, dt, kStiffAlpha, kDampAlpha);
-    m_controlsAlpha = qBound(0.f, m_controlsAlpha, 1.f);
-
-    m_hintAlpha = springStep1D(m_hintAlpha, m_hintAlphaTarget, m_hintAlphaVelocity, dt, kStiffAlpha, kDampAlpha);
-    m_hintAlpha = qBound(0.f, m_hintAlpha, 1.f);
+    
     m_hintX     = springStep1D(m_hintX, m_hintXTarget, m_hintXVelocity, dt, kStiffF, kDampF);
 
     updateLayout();
@@ -1840,7 +1818,6 @@ void FullscreenPlayer::animateTick()
 
         if (!m_lyricsVisible && inRight != m_stateHinted) {
             m_stateHinted    = inRight;
-            m_hintAlphaTarget = m_stateHinted ? 1.f : 0.f;
             m_hintXTarget     = (float)(w - m_lyricsHint->width() - 24 + (m_stateHinted ? 0 : 20));
             updateState();
         }
@@ -1848,9 +1825,43 @@ void FullscreenPlayer::animateTick()
         if (m_stateLifted && !m_hideControlsTimer->isActive()) m_hideControlsTimer->start(200);
         if (m_stateHinted && !m_lyricsVisible) {
             m_stateHinted    = false;
-            m_hintAlphaTarget = 0.f;
             m_hintXTarget     = (float)(width() - m_lyricsHint->width() - 24 + 20);
             updateState();
         }
     }
+
+    // Linear fade for opacity (foolproof)
+    float fadeSpeed = dt * 8.0f; // 8.0 units per second = 125ms duration
+    
+    if (m_stateLifted) {
+        m_controlsAlpha = qMin(1.0f, m_controlsAlpha + fadeSpeed);
+    } else {
+        m_controlsAlpha = qMax(0.0f, m_controlsAlpha - fadeSpeed);
+    }
+    
+    if (m_stateHinted || m_lyricsVisible) {
+        m_hintAlpha = qMin(1.0f, m_hintAlpha + fadeSpeed);
+    } else {
+        m_hintAlpha = qMax(0.0f, m_hintAlpha - fadeSpeed);
+    }
+
+    m_shuffleBtn->setGroupOpacity(m_controlsAlpha);
+    m_prevBtn->setGroupOpacity(m_controlsAlpha);
+    m_playBtn->setGroupOpacity(m_controlsAlpha);
+    m_nextBtn->setGroupOpacity(m_controlsAlpha);
+    m_repeatBtn->setGroupOpacity(m_controlsAlpha);
+    m_muteBtn->setGroupOpacity(m_controlsAlpha);
+    
+    m_lyricsHint->setGroupOpacity(m_hintAlpha);
+
+    // Fade only the volume slider (which belongs to the disappearing playback controls)
+    m_volumeSlider->setStyleSheet(QString(
+        "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,%1);border-radius:2px;}"
+        "QSlider::sub-page:horizontal{background:rgba(255,255,255,%2);border-radius:2px;}"
+        "QSlider::handle:horizontal{width:0px;height:0px;}")
+        .arg((int)(63 * m_controlsAlpha))
+        .arg((int)(216 * m_controlsAlpha)));
+
+    m_playbackControls->setAttribute(Qt::WA_TransparentForMouseEvents, m_controlsAlpha <= 0.05f);
+    m_lyricsHint->setAttribute(Qt::WA_TransparentForMouseEvents, m_hintAlpha <= 0.05f);
 }

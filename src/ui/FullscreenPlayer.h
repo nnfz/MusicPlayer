@@ -78,6 +78,9 @@ public:
     }
     float scale() const { return m_scale; }
     void setScale(float s) { m_scale = s; update(); }
+    float groupOpacity() const { return m_groupOpacity; }
+    void setGroupOpacity(float o) { m_groupOpacity = o; update(); }
+
 protected:
     void enterEvent(QEnterEvent *e) override {
         QPushButton::enterEvent(e);
@@ -101,6 +104,10 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
         
+        // Multiply group opacity with base icon opacity logic (hover fade)
+        float hoverAlpha = 0.5f + (underMouse() ? 0.5f : 0.0f); // 0.5 to 1.0 based on hover
+        p.setOpacity(m_groupOpacity * hoverAlpha);
+        
         p.translate(rect().center());
         p.scale(m_scale, m_scale);
         p.translate(-rect().center());
@@ -110,13 +117,16 @@ protected:
             QRect iconRect(rect().center() - pix.rect().center(), pix.size());
             p.drawPixmap(iconRect, pix);
         } else if (!text().isEmpty()) {
-            p.setPen(palette().color(QPalette::ButtonText));
+            QColor txtColor = palette().color(QPalette::ButtonText);
+            txtColor.setAlphaF(m_groupOpacity * hoverAlpha);
+            p.setPen(txtColor);
             p.setFont(font());
             p.drawText(rect(), Qt::AlignCenter, text());
         }
     }
 private:
     float m_scale = 1.0f;
+    float m_groupOpacity = 1.0f;
     QPropertyAnimation* m_anim;
 };
 
@@ -239,6 +249,9 @@ private:
     QGraphicsOpacityEffect *m_playbackControlsOpacityEffect { nullptr };
     QGraphicsOpacityEffect *m_lyricsHintOpacityEffect { nullptr };
 
+    float                  m_controlsAlpha { 0.f };
+    float                  m_hintAlpha     { 0.f };
+
     QLabel                *m_coverLabel   { nullptr };
     MarqueeLabel          *m_titleLabel   { nullptr };
     MarqueeLabel          *m_artistLabel  { nullptr };
@@ -285,22 +298,14 @@ private:
 
     float                  m_lyricsPanelX        { 0.f };
     float                  m_lyricsPanelXTarget  { 0.f };
-    float                  m_lyricsPanelXVelocity{ 0.f };
+    float                  m_lyricsPanelXVelocity { 0.f };
 
-    float                  m_controlsY           { 0.f };
-    float                  m_controlsYTarget     { 0.f };
-    float                  m_controlsYVelocity   { 0.f };
+    float                  m_controlsY       { 0.f };
+    float                  m_controlsYTarget { 0.f };
+    float                  m_controlsYVelocity { 0.f };
 
-    float                  m_controlsAlpha       { 0.f };
-    float                  m_controlsAlphaTarget { 0.f };
-    float                  m_controlsAlphaVelocity { 0.f };
-
-    float                  m_hintAlpha           { 0.f };
-    float                  m_hintAlphaTarget     { 0.f };
-    float                  m_hintAlphaVelocity   { 0.f };
-
-    float                  m_hintX               { 0.f };
-    float                  m_hintXTarget         { 0.f };
+    float                  m_hintX       { 0.f };
+    float                  m_hintXTarget { 0.f };
     float                  m_hintXVelocity       { 0.f };
 
     int                    m_lyricsScrollTarget   { 0 };
