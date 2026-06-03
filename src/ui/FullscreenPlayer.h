@@ -251,8 +251,6 @@ private:
     AnimatedScaleButton   *m_nextBtn      { nullptr };
     AnimatedScaleButton   *m_repeatBtn    { nullptr };
     AnimatedScaleButton   *m_likeBtn      { nullptr };
-    AnimatedScaleButton   *m_textBtn      { nullptr };
-    AnimatedScaleButton   *m_closeBtn     { nullptr };
     AnimatedScaleButton   *m_muteBtn      { nullptr };
     ClickableSlider       *m_volumeSlider { nullptr };
     QListWidget           *m_lyricsList   { nullptr };
@@ -280,6 +278,10 @@ private:
     QPointF                m_centerOffset;
     QPointF                m_centerOffsetTarget;
     QPointF                m_centerOffsetVelocity;
+
+    float m_hintExtScale  { 1.0f };
+    float m_hintExtScaleV { 0.0f };
+    bool  m_hintExtPress  { false };
 
     float                  m_lyricsPanelX        { 0.f };
     float                  m_lyricsPanelXTarget  { 0.f };

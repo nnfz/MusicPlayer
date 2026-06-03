@@ -671,7 +671,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_prevBtn    = makeCtrlBtn(":/icons/playbackward.svg", QString::fromUtf8("\xE2\x8F\xAE"), 24);
     m_playBtn    = makeCtrlBtn(":/icons/play.svg", QString::fromUtf8("\xE2\x96\xB6"), 32, true);
     m_nextBtn    = makeCtrlBtn(":/icons/playforward.svg", QString::fromUtf8("\xE2\x8F\xAD"), 24);
-    m_repeatBtn  = makeCtrlBtn(":/icons/repeat.svg", QString::fromUtf8("\xE2\xBF\x81"), 24);
+    m_repeatBtn  = makeCtrlBtn(":/icons/norepeat.svg", QString::fromUtf8("\xE2\xBF\x81"), 24);
 
     QWidget *leftSpacer = new QWidget(m_playbackControls);
     leftSpacer->setFixedWidth(120);
@@ -857,7 +857,10 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
                     }
                 }
                 // Эффект нажатия при закрытии по клику в пустоту
-                m_lyricsHint->setScale(0.85f);
+                m_hintExtPress = true;
+                m_hintExtScale = 0.85f;
+                m_hintExtScaleV = 0.0f;
+                QTimer::singleShot(120, this, [this]{ m_hintExtPress = false; });
                 setLyricsVisible(false, true);
                 return true;
             }
@@ -952,6 +955,10 @@ void FullscreenPlayer::openFor(const QPixmap &cover, const QString &title, const
     m_hintAlpha         = 0.f;
     m_hintAlphaTarget   = 0.f;
     m_hintAlphaVelocity = 0.f;
+
+    m_hintExtScale  = 1.0f;
+    m_hintExtScaleV = 0.0f;
+    m_hintExtPress  = false;
 
     m_hintX         = (float)(width() - m_lyricsHint->width() - 24 + 20);
     m_hintXTarget   = m_hintX;
@@ -1100,21 +1107,26 @@ void FullscreenPlayer::updateShuffleState(bool enabled, int mode) {
         : "QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:20px;}QPushButton:hover{color:white;}");
 }
 void FullscreenPlayer::updateRepeatState(int mode) {
+    if (mode == 2)
+        m_repeatBtn->setIcon(QIcon(":/icons/repeat.svg"));
+    else if (mode == 1)
+        m_repeatBtn->setIcon(QIcon(":/icons/repeatplaylist.svg"));
+    else
+        m_repeatBtn->setIcon(QIcon(":/icons/norepeat.svg"));
     m_repeatBtn->setStyleSheet(mode > 0
         ? "QPushButton{background:transparent;border:none;color:white;font-size:20px;}"
         : "QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:20px;}QPushButton:hover{color:white;}");
 }
 
 bool FullscreenPlayer::hasLyrics() const { return m_lyricsSyncedAvailable || !m_lyricsPlainLines.isEmpty(); }
-void FullscreenPlayer::toggleLyrics() { 
-    if (!hasLyrics()) return; 
-    if (!m_lyricsVisible) {
-        // Эффект нажатия при открытии
-        m_lyricsHint->setScale(0.85f);
-    }
-    setLyricsVisible(!m_lyricsVisible, true, true); 
+void FullscreenPlayer::toggleLyrics() {
+    if (!hasLyrics()) return;
+    m_hintExtPress = true;
+    m_hintExtScale = 0.85f;
+    m_hintExtScaleV = 0.0f;
+    QTimer::singleShot(120, this, [this]{ m_hintExtPress = false; });
+    setLyricsVisible(!m_lyricsVisible, true, true);
 }
-
 void FullscreenPlayer::requestLyrics()
 {
     loadLyricsCache();
@@ -1326,8 +1338,8 @@ void FullscreenPlayer::parsePlainLyrics(const QString &text)
 
 void FullscreenPlayer::updateLyricsButtonState()
 {
-    if (!m_textBtn) return;
-    m_textBtn->setEnabled(hasLyrics());
+    if (!m_lyricsHint) return;
+    m_lyricsHint->setEnabled(hasLyrics());
 }
 
 void FullscreenPlayer::updateLyricsHighlight(int ms)
@@ -1680,6 +1692,9 @@ void FullscreenPlayer::updateLayout()
     m_playbackControls->setGeometry(0, qRound(m_controlsY), w, pcH);
     m_playbackControlsOpacityEffect->setOpacity((double)m_controlsAlpha);
     m_playbackControls->setEnabled(m_controlsAlpha > 0.1f);
+
+    if (m_titleBarOpacityEffect) m_titleBarOpacityEffect->setOpacity(1.0);
+    if (m_seekBarOpacityEffect) m_seekBarOpacityEffect->setOpacity(1.0);
     
     if (m_bgWidget) {
         m_bgWidget->move(0, 0);
@@ -1777,15 +1792,19 @@ void FullscreenPlayer::animateTick()
     static constexpr float kStiffF = 180.f;
     static constexpr float kDampF  = 20.f;
 
+    // Softer spring for alpha to avoid "nervous" transitions
+    static constexpr float kStiffAlpha = 80.f;
+    static constexpr float kDampAlpha  = 15.f;
+
     m_centerOffset = springStep(m_centerOffset, m_centerOffsetTarget, m_centerOffsetVelocity, dt, kStiff, kDamp);
 
     m_lyricsPanelX = springStep1D(m_lyricsPanelX, m_lyricsPanelXTarget, m_lyricsPanelXVelocity, dt, kStiffF, kDampF);
 
     m_controlsY     = springStep1D(m_controlsY,     m_controlsYTarget,     m_controlsYVelocity,     dt, kStiffF, kDampF);
-    m_controlsAlpha = springStep1D(m_controlsAlpha, m_controlsAlphaTarget, m_controlsAlphaVelocity, dt, kStiff,  kDamp);
+    m_controlsAlpha = springStep1D(m_controlsAlpha, m_controlsAlphaTarget, m_controlsAlphaVelocity, dt, kStiffAlpha, kDampAlpha);
     m_controlsAlpha = qBound(0.f, m_controlsAlpha, 1.f);
 
-    m_hintAlpha = springStep1D(m_hintAlpha, m_hintAlphaTarget, m_hintAlphaVelocity, dt, kStiff, kDamp);
+    m_hintAlpha = springStep1D(m_hintAlpha, m_hintAlphaTarget, m_hintAlphaVelocity, dt, kStiffAlpha, kDampAlpha);
     m_hintAlpha = qBound(0.f, m_hintAlpha, 1.f);
     m_hintX     = springStep1D(m_hintX, m_hintXTarget, m_hintXVelocity, dt, kStiffF, kDampF);
 
@@ -1804,10 +1823,14 @@ void FullscreenPlayer::animateTick()
     QPoint pos = mapFromGlobal(QCursor::pos());
     const int w = width(), h = height();
     bool isMouseInside = (pos.x() >= -2 && pos.x() <= w+2 && pos.y() >= -2 && pos.y() <= h+2);
+    bool inRight = isMouseInside && ((w - pos.x()) <= w * 0.20f);
+
+    float hintScaleTarget = m_hintExtPress ? 0.85f : (inRight ? 1.12f : 1.0f);
+    m_hintExtScale = springStep1D(m_hintExtScale, hintScaleTarget, m_hintExtScaleV, dt, 350.f, 28.f);
+    m_lyricsHint->setScale(qBound(0.5f, m_hintExtScale, 1.5f));
 
     if (isMouseInside && !m_userSeeking) {
         bool inBottom = (h - pos.y()) <= h * 0.20;
-        bool inRight  = (w - pos.x()) <= w * 0.20;
 
         if (inBottom) {
             showControls();
