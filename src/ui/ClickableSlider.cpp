@@ -1,5 +1,6 @@
 #include "ClickableSlider.h"
 #include <QMouseEvent>
+#include <QEnterEvent>
 #include <QWheelEvent>
 #include <QStyle>
 #include <QStyleOptionSlider>
@@ -7,6 +8,21 @@
 ClickableSlider::ClickableSlider(Qt::Orientation orientation, QWidget *parent)
     : QSlider(orientation, parent)
 {
+    setFocusPolicy(Qt::NoFocus);
+}
+
+void ClickableSlider::enterEvent(QEnterEvent *event)
+{
+    setProperty("hoverActive", true);
+    style()->polish(this);
+    QSlider::enterEvent(event);
+}
+
+void ClickableSlider::leaveEvent(QEvent *event)
+{
+    setProperty("hoverActive", false);
+    style()->polish(this);
+    QSlider::leaveEvent(event);
 }
 
 int ClickableSlider::valueFromPos(const QPoint &pos) const

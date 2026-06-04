@@ -467,11 +467,11 @@ void MarqueeLabel::paintEvent(QPaintEvent *) {
     p.setFont(m_font);
     p.setPen(m_color);
     if (m_textW <= width()) {
-        p.drawText(rect(), m_alignment, m_text);
+        p.drawText(rect(), m_alignment | Qt::TextSingleLine, m_text);
     } else {
         const qreal dist = m_textW + kGap;
-        p.drawText(rect().translated(-m_offset, 0.0),        Qt::AlignLeft | Qt::AlignVCenter, m_text);
-        p.drawText(rect().translated(-m_offset + dist, 0.0), Qt::AlignLeft | Qt::AlignVCenter, m_text);
+        p.drawText(rect().translated(-m_offset, 0.0),        Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextDontClip, m_text);
+        p.drawText(rect().translated(-m_offset + dist, 0.0), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextDontClip, m_text);
     }
 }
 
@@ -692,9 +692,11 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setFixedWidth(80);
     m_volumeSlider->setStyleSheet(
+        "QSlider { min-height: 16px; background: transparent; }"
         "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,0.25);border-radius:2px;}"
         "QSlider::sub-page:horizontal{background:rgba(255,255,255,0.85);border-radius:2px;}"
-        "QSlider::handle:horizontal{width:0px;height:0px;}");
+        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;}"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal{background:#fff;}");
     volRow->addWidget(m_muteBtn);
     volRow->addWidget(m_volumeSlider);
 
@@ -1846,9 +1848,12 @@ void FullscreenPlayer::animateTick()
 
     // Fade only the volume slider (which belongs to the disappearing playback controls)
     m_volumeSlider->setStyleSheet(QString(
+        "QSlider { min-height: 16px; background: transparent; } QSlider:focus { outline: none; }"
         "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,%1);border-radius:2px;}"
         "QSlider::sub-page:horizontal{background:rgba(255,255,255,%2);border-radius:2px;}"
-        "QSlider::handle:horizontal{width:0px;height:0px;}")
+        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;}"
+        "QSlider:hover::handle:horizontal{background:#fff;}"
+        "QSlider::handle:horizontal:hover{background:#fff;}")
         .arg((int)(63 * m_controlsAlpha))
         .arg((int)(216 * m_controlsAlpha)));
 

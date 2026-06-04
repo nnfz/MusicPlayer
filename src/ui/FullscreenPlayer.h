@@ -120,8 +120,21 @@ protected:
         p.scale(m_scale, m_scale);
         p.translate(-rect().center());
 
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
+
         if (!icon().isNull()) {
             QPixmap pix = icon().pixmap(iconSize(), isEnabled() ? (underMouse() ? QIcon::Active : QIcon::Normal) : QIcon::Disabled, isDown() ? QIcon::On : QIcon::Off);
+            
+            QColor iconColor = palette().color(QPalette::ButtonText);
+            if (iconColor.isValid() && iconColor.alpha() > 0) {
+                QPainter pixPainter(&pix);
+                pixPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                pixPainter.fillRect(pix.rect(), iconColor);
+                pixPainter.end();
+            }
+            
             QRect iconRect(rect().center() - pix.rect().center(), pix.size());
             p.drawPixmap(iconRect, pix);
         } else if (!text().isEmpty()) {

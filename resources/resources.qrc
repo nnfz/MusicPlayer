@@ -13,5 +13,6 @@
         <file>icons/textclose.svg</file>
         <file>icons/norepeat.svg</file>
         <file>icons/noshuffle.svg</file>
+        <file>icons/heart.svg</file>
     </qresource>
 </RCC>

@@ -704,7 +704,7 @@ void MusicPlayer::setupUI()
     m_artistLabel->setMaximumWidth(300);
     m_artistLabel->setFixedHeight(13);
     m_artistLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    { QFont f; f.setPixelSize(11);
+    { QFont f; f.setPixelSize(10);
       f.setVariableAxis("wght", 600.0f);
       m_artistLabel->setTextStyle(f, QColor(179,179,179,255)); }
     m_artistLabel->setText("");
@@ -712,7 +712,9 @@ void MusicPlayer::setupUI()
     trackInfoLayout->addWidget(m_artistLabel);
 
     m_likeButton = new AnimatedScaleButton();
-    m_likeButton->setText(QString::fromUtf8("\xE2\x99\xA1"));
+    m_likeButton->setFixedSize(40, 40);
+    m_likeButton->setIconSize(QSize(16, 16));
+    m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
 
     leftSection->addWidget(m_bottomCoverLabel);
     leftSection->addLayout(trackInfoLayout);
@@ -792,8 +794,8 @@ void MusicPlayer::setupUI()
         "QSlider { min-height: 16px; background: transparent; }"
         "QSlider::groove:horizontal { height: 4px; background: #4d4d4d; border-radius: 2px; }"
         "QSlider::sub-page:horizontal { background: #b3b3b3; border-radius: 2px; }"
-        "QSlider::handle:horizontal { background: #fff; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }"
-        "QSlider::handle:horizontal:hover { background: #0078d7; }";
+        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: transparent; }"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal { background: #fff; }";
 
     m_volumeSlider = new ClickableSlider(Qt::Horizontal);
     m_volumeSlider->setRange(0, 100);
@@ -1289,16 +1291,23 @@ void MusicPlayer::updateLikeButtonState()
     const QString activeStyle = "QPushButton { background: transparent; border: none; color: #1db954; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: #1ed760; }";
 
     if (m_currentIndex < 0 || m_currentIndex >= m_tracks.count()) {
-        m_likeButton->setText(outlineHeart);
-        m_likeButton->setStyleSheet(defaultStyle);
+        m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
+        m_likeButton->setStyleSheet("QPushButton { margin: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } QPushButton:hover { background: rgba(255, 255, 255, 0.2); }");
         return;
     }
 
     const QString filePath = m_tracks[m_currentIndex]->filePath();
     const bool liked = isTrackLiked(filePath);
 
-    m_likeButton->setText(liked ? filledHeart : outlineHeart);
-    m_likeButton->setStyleSheet(liked ? activeStyle : defaultStyle);
+    // When liked, background becomes white and icon becomes dark (or uses a filled icon if available).
+    // Assuming heart.svg uses currentColor, we can tint it via CSS if the custom widget supports it,
+    // or just rely on the background color change. We'll set the background to solid white when liked.
+    m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
+    if (liked) {
+        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 8px; background: white; border-radius: 12px; color: #121212; }"); // color sets icon tint if svg is configured for it
+    } else {
+        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } AnimatedScaleButton:hover { background: rgba(255, 255, 255, 0.2); }");
+    }
 
     if (m_fullscreenPlayer)
         m_fullscreenPlayer->updateLikeState(liked);
