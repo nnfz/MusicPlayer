@@ -438,7 +438,7 @@ MarqueeLabel::MarqueeLabel(QWidget *parent) : QWidget(parent) {
 void MarqueeLabel::setText(const QString &text) {
     if (m_text == text) return;
     m_text = text; m_offset = 0.0; m_anim->stop();
-    m_textW = fontMetrics().horizontalAdvance(m_text);
+    m_textW = QFontMetrics(m_font).horizontalAdvance(m_text);
     updateGeometry();
     restartScroll();
 }
@@ -448,8 +448,8 @@ void MarqueeLabel::setTextStyle(const QFont &font, const QColor &color) {
     updateGeometry();
     restartScroll();
 }
-QSize MarqueeLabel::sizeHint() const        { return {qBound(420, m_textW, 1100), QFontMetrics(m_font).height() + 4}; }
-QSize MarqueeLabel::minimumSizeHint() const { return {50, QFontMetrics(m_font).height() + 4}; }
+QSize MarqueeLabel::sizeHint() const        { return {qBound(50, m_textW, 1100), QFontMetrics(m_font).height() - 2}; }
+QSize MarqueeLabel::minimumSizeHint() const { return {50, QFontMetrics(m_font).height() - 2}; }
 void MarqueeLabel::restartScroll() {
     m_anim->stop(); m_offset = 0.0;
     if (m_textW <= width()) { update(); return; }
@@ -467,7 +467,7 @@ void MarqueeLabel::paintEvent(QPaintEvent *) {
     p.setFont(m_font);
     p.setPen(m_color);
     if (m_textW <= width()) {
-        p.drawText(rect(), Qt::AlignCenter, m_text);
+        p.drawText(rect(), m_alignment, m_text);
     } else {
         const qreal dist = m_textW + kGap;
         p.drawText(rect().translated(-m_offset, 0.0),        Qt::AlignLeft | Qt::AlignVCenter, m_text);
@@ -576,6 +576,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     m_titleLabel = new MarqueeLabel(info);
     m_titleLabel->setMaximumWidth(1100);
+    m_titleLabel->setAlignment(Qt::AlignCenter);
     m_titleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     { QFont f("-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"); f.setPixelSize(18); f.setBold(true);
       m_titleLabel->setTextStyle(f, QColor(255,255,255)); }
@@ -583,6 +584,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     m_artistLabel = new MarqueeLabel(info);
     m_artistLabel->setMaximumWidth(1100);
+    m_artistLabel->setAlignment(Qt::AlignCenter);
     m_artistLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     { QFont f("-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"); f.setPixelSize(14);
       m_artistLabel->setTextStyle(f, QColor(255,255,255,165)); }
@@ -1059,7 +1061,6 @@ void FullscreenPlayer::updatePlayState(bool playing)
     if (playing) {
         m_playBtn->setIcon(QIcon(":/icons/pause.svg"));
     } else {
-        m_playBtn->setText(QString());
         m_playBtn->setIcon(QIcon(":/icons/play.svg"));
     }
     m_positionAnchorPlaying  = playing;

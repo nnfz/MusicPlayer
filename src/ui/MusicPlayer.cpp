@@ -3,6 +3,7 @@
 #include <QParallelAnimationGroup>
 #include <QGraphicsOpacityEffect>
 #include <QGraphicsScale>
+#include <QPainterPath>
 #include "CueParser.h"
 #include "TrackItem.h"
 #include <QDragEnterEvent>
@@ -150,6 +151,16 @@ static QString makeCueSavedPath(const QString &cuePath, int trackNum)
 {
     return QStringLiteral("CUE|") + cuePath + '|' + QString::number(trackNum);
 }
+
+static QPixmap rounded(const QPixmap &src, int r)
+{
+    if (src.isNull()) return {};
+    QPixmap out(src.size()); out.fill(Qt::transparent);
+    QPainter p(&out); p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path; path.addRoundedRect(out.rect(), r, r);
+    p.setClipPath(path); p.drawPixmap(0, 0, src); return out;
+}
+
 
 QStringList audioNameFilters()
 {
@@ -671,30 +682,37 @@ void MusicPlayer::setupUI()
     QPixmap defaultCover(48, 48);
     defaultCover.fill(QColor(40, 40, 40));
     { QPainter p(&defaultCover); p.setPen(QColor(100,100,100)); p.setFont(QFont("Segoe UI Emoji", 20)); p.drawText(defaultCover.rect(), Qt::AlignCenter, QString::fromUtf8("\xF0\x9F\x8E\xB5")); }
-    m_bottomCoverLabel->setPixmap(defaultCover);
-    m_bottomCoverLabel->setStyleSheet("border-radius: 4px;");
+    // m_bottomCoverLabel->setPixmap(defaultCover);
+    m_bottomCoverLabel->setPixmap(rounded(defaultCover, 4));
     m_bottomCoverLabel->setCursor(Qt::PointingHandCursor);
     m_bottomCoverLabel->installEventFilter(this);
 
     QVBoxLayout *trackInfoLayout = new QVBoxLayout();
-    trackInfoLayout->setSpacing(1);
+    trackInfoLayout->setSpacing(5);
     trackInfoLayout->setContentsMargins(0, 0, 0, 0);
+    trackInfoLayout->setAlignment(Qt::AlignLeft);
     m_titleLabel = new MarqueeLabel();
-    m_titleLabel->setFixedWidth(200);
+    m_titleLabel->setMaximumWidth(300);
+    m_titleLabel->setFixedHeight(15);
+    m_titleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     { QFont f; f.setPixelSize(13);
-      f.setVariableAxis("wght", 700.0f); // Точный Bold
+      f.setVariableAxis("wght", 700.0f);
       m_titleLabel->setTextStyle(f, QColor(255,255,255,255)); }
     m_titleLabel->setText("No track playing");
 
     m_artistLabel = new MarqueeLabel();
-    m_artistLabel->setFixedWidth(200);
+    m_artistLabel->setMaximumWidth(300);
+    m_artistLabel->setFixedHeight(13);
+    m_artistLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     { QFont f; f.setPixelSize(11);
+      f.setVariableAxis("wght", 600.0f);
       m_artistLabel->setTextStyle(f, QColor(179,179,179,255)); }
     m_artistLabel->setText("");
     trackInfoLayout->addWidget(m_titleLabel);
     trackInfoLayout->addWidget(m_artistLabel);
 
-    m_likeButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA1"));
+    m_likeButton = new AnimatedScaleButton();
+    m_likeButton->setText(QString::fromUtf8("\xE2\x99\xA1"));
 
     leftSection->addWidget(m_bottomCoverLabel);
     leftSection->addLayout(trackInfoLayout);
@@ -714,11 +732,17 @@ void MusicPlayer::setupUI()
     QString ctrlBtnStyle = "QPushButton { background: transparent; border: none; color: #b3b3b3; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: white; }";
     QString playBtnStyle = "QPushButton { background: transparent; border: none; color: white; font-size: 28px; padding: 4px 12px; } QPushButton:hover { color: #0078d7; }";
 
-    m_shuffleButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x80"));
-    m_previousButton = new QPushButton(QString::fromUtf8("\xE2\x8F\xAE"));
-    m_playButton = new QPushButton(QString::fromUtf8("\xE2\x96\xB6"));
-    m_nextButton = new QPushButton(QString::fromUtf8("\xE2\x8F\xAD"));
-    m_repeatButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x81"));
+    m_shuffleButton = new AnimatedScaleButton();
+    m_previousButton = new AnimatedScaleButton();
+    m_playButton = new AnimatedScaleButton();
+    m_nextButton = new AnimatedScaleButton();
+    m_repeatButton = new AnimatedScaleButton();
+
+    m_shuffleButton->setIcon(QIcon(":/icons/noshuffle.svg"));
+    m_previousButton->setIcon(QIcon(":/icons/playbackward.svg"));
+    m_playButton->setIcon(QIcon(":/icons/play.svg"));
+    m_nextButton->setIcon(QIcon(":/icons/playforward.svg"));
+    m_repeatButton->setIcon(QIcon(":/icons/norepeat.svg"));
 
     m_shuffleButton->setStyleSheet(ctrlBtnStyle);
     m_previousButton->setStyleSheet(ctrlBtnStyle);
@@ -734,6 +758,14 @@ void MusicPlayer::setupUI()
     m_repeatButton->setCursor(Qt::PointingHandCursor);
     m_likeButton->setCursor(Qt::PointingHandCursor);
 
+    const int iconsize = 24;
+    const int iconplayaddsize = iconsize + 10;
+    m_shuffleButton->setIconSize(QSize(iconsize, iconsize));
+    m_previousButton->setIconSize(QSize(iconsize, iconsize));
+    m_playButton->setIconSize(QSize(iconplayaddsize, iconplayaddsize));
+    m_nextButton->setIconSize(QSize(iconsize, iconsize));
+    m_repeatButton->setIconSize(QSize(iconsize, iconsize));
+    
     centerSection->addWidget(m_shuffleButton);
     centerSection->addWidget(m_previousButton);
     centerSection->addWidget(m_playButton);
@@ -750,7 +782,8 @@ void MusicPlayer::setupUI()
     rightSection->setContentsMargins(0, 0, 0, 0);
     rightSection->setAlignment(Qt::AlignVCenter);
 
-    m_volumeLabel = new QLabel(QString::fromUtf8("\xF0\x9F\x94\x8A"));
+    m_volumeLabel = new AnimatedScaleButton();
+    m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x8A"));
     m_volumeLabel->setStyleSheet("font-size: 16px; color: #b3b3b3; background: transparent;");
     m_volumeLabel->setCursor(Qt::PointingHandCursor);
     m_volumeLabel->installEventFilter(this);
@@ -922,14 +955,11 @@ void MusicPlayer::setupConnections()
     connect(m_repeatButton, &QPushButton::clicked, this, [this]() {
         m_repeatMode = (m_repeatMode + 1) % 3;
         if (m_repeatMode == 0) {
-            m_repeatButton->setText(QString::fromUtf8("\xF0\x9F\x94\x81"));
-            m_repeatButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #b3b3b3; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: white; }");
+            m_repeatButton->setIcon(QIcon(":/icons/norepeat.svg"));
         } else if (m_repeatMode == 1) {
-            m_repeatButton->setText(QString::fromUtf8("\xF0\x9F\x94\x81"));
-            m_repeatButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #1db954; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: #1ed760; }");
+            m_repeatButton->setIcon(QIcon(":/icons/repeatplaylist.svg"));
         } else {
-            m_repeatButton->setText(QString::fromUtf8("\xF0\x9F\x94\x82"));
-            m_repeatButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #1db954; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: #1ed760; }");
+            m_repeatButton->setIcon(QIcon(":/icons/repeat.svg"));
         }
 
         if (m_fullscreenPlayer)
@@ -3374,22 +3404,11 @@ void MusicPlayer::applyShuffleButtonStyle()
     if (m_fullscreenPlayer)
         m_fullscreenPlayer->updateShuffleState(m_shuffleEnabled, m_shuffleMode);
 
-    if (!m_shuffleEnabled) {
-        m_shuffleButton->setText(QString::fromUtf8("\xF0\x9F\x94\x80"));
-        m_shuffleButton->setToolTip("Shuffle: Off");
-        m_shuffleButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #b3b3b3; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: white; }");
-        return;
-    }
+    if (!m_shuffleEnabled) 
+        m_shuffleButton->setIcon(QIcon(":/icons/noshuffle.svg"));
+    else 
+        m_shuffleButton->setIcon(QIcon(":/icons/shuffle.svg"));
 
-    if (isShuffleHistoryMode()) {
-        m_shuffleButton->setText(QString::fromUtf8("\xF0\x9F\x94\x80") + "S");
-        m_shuffleButton->setToolTip("Shuffle mode: History-aware");
-        m_shuffleButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #1db954; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: #1ed760; }");
-    } else {
-        m_shuffleButton->setText(QString::fromUtf8("\xF0\x9F\x94\x80") + "R");
-        m_shuffleButton->setToolTip("Shuffle mode: Random in both directions");
-        m_shuffleButton->setStyleSheet("QPushButton { background: transparent; border: none; color: #00bcd4; font-size: 16px; padding: 4px 8px; } QPushButton:hover { color: #38d6ea; }");
-    }
 }
 
 QList<int> MusicPlayer::buildOrderedTrackIndices() const
@@ -4018,8 +4037,8 @@ void MusicPlayer::playCurrentItem()
 void MusicPlayer::onEngineStateChanged(GaplessAudioEngine::State state) {
     qInfo() << "[seek-ui] engine stateChanged" << engineStateToString(state);
     const bool playing = (state == GaplessAudioEngine::Playing);
-    if (playing) m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8"));
-    else m_playButton->setText(QString::fromUtf8("\xE2\x96\xB6"));
+    if (playing) m_playButton->setIcon(QIcon(":/icons/pause.svg"));
+    else m_playButton->setIcon(QIcon(":/icons/play.svg"));
     #ifdef Q_OS_WIN
         if (m_winTaskbar)
             m_winTaskbar->setPlaying(playing);
@@ -4687,7 +4706,7 @@ void MusicPlayer::updateBottomBarFromTrack(TrackItem *track)
 
     const QPixmap cover = md.coverPixmap();
     if (!cover.isNull()) {
-        m_bottomCoverLabel->setPixmap(cover.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_bottomCoverLabel->setPixmap(rounded(cover.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation), 4));
         if (m_bottomGlow) {
             m_bottomGlow->setColor(extractDominantColor(cover));
         }

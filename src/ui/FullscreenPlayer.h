@@ -39,6 +39,7 @@ public:
 
     void setText(const QString &text);
     void setTextStyle(const QFont &font, const QColor &color);
+    void setAlignment(Qt::Alignment align) { m_alignment = align; update(); }
     void setOpacity(double v) { m_opacity = v; update(); }
 
     QSize sizeHint() const override;
@@ -60,6 +61,7 @@ private:
     int                m_textW { 0 };
     qreal              m_offset { 0.0 };
     double             m_opacity { 1.0 };
+    Qt::Alignment      m_alignment { Qt::AlignLeft | Qt::AlignVCenter };
     QPropertyAnimation *m_anim { nullptr };
 
     static constexpr int kSpeed { 60 };

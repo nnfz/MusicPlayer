@@ -227,12 +227,12 @@ private:
 
     PlaylistTable *m_playlistTable = nullptr;
 
-    QPushButton *m_playButton = nullptr;
-    QPushButton *m_nextButton = nullptr;
-    QPushButton *m_previousButton = nullptr;
-    QPushButton *m_likeButton = nullptr;
-    QPushButton *m_shuffleButton = nullptr;
-    QPushButton *m_repeatButton = nullptr;
+    AnimatedScaleButton *m_playButton = nullptr;
+    AnimatedScaleButton *m_nextButton = nullptr;
+    AnimatedScaleButton *m_previousButton = nullptr;
+    AnimatedScaleButton *m_likeButton = nullptr;
+    AnimatedScaleButton *m_shuffleButton = nullptr;
+    AnimatedScaleButton *m_repeatButton = nullptr;
     QPushButton *m_settingsButton = nullptr;
     ClickableSlider *m_positionSlider = nullptr;
     ClickableSlider *m_volumeSlider = nullptr;
@@ -242,7 +242,7 @@ private:
     MarqueeLabel    *m_titleLabel        = nullptr;
     MarqueeLabel    *m_artistLabel       = nullptr;
     QLabel *m_bottomCoverLabel = nullptr;
-    QLabel *m_volumeLabel = nullptr;
+    AnimatedScaleButton *m_volumeLabel = nullptr;
     QLabel *m_trackCountLabel = nullptr;
 
     QLineEdit *m_searchBox = nullptr;
