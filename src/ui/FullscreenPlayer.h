@@ -81,6 +81,14 @@ public:
     float groupOpacity() const { return m_groupOpacity; }
     void setGroupOpacity(float o) { m_groupOpacity = o; update(); }
 
+    void pulse() {
+        m_anim->stop();
+        m_scale = 0.85f;
+        update();
+        m_anim->setEndValue(1.0f);
+        m_anim->start();
+    }
+
 protected:
     void enterEvent(QEnterEvent *e) override {
         QPushButton::enterEvent(e);
@@ -104,9 +112,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
         
-        // Multiply group opacity with base icon opacity logic (hover fade)
-        float hoverAlpha = 0.5f + (underMouse() ? 0.5f : 0.0f); // 0.5 to 1.0 based on hover
-        p.setOpacity(m_groupOpacity * hoverAlpha);
+        p.setOpacity(m_groupOpacity);
         
         p.translate(rect().center());
         p.scale(m_scale, m_scale);
@@ -118,7 +124,7 @@ protected:
             p.drawPixmap(iconRect, pix);
         } else if (!text().isEmpty()) {
             QColor txtColor = palette().color(QPalette::ButtonText);
-            txtColor.setAlphaF(m_groupOpacity * hoverAlpha);
+            txtColor.setAlphaF(m_groupOpacity);
             p.setPen(txtColor);
             p.setFont(font());
             p.drawText(rect(), Qt::AlignCenter, text());

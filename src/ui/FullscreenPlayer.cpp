@@ -542,7 +542,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     auto makeTitleBtn = [&](const QString &iconPath, const QString &fallbackTxt) {
         auto *b = new AnimatedScaleButton(m_titleBar);
         b->setFixedSize(48, 48);
-        b->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.75);font-size:26px;}QPushButton:hover{color:white;}");
+        b->setStyleSheet("QPushButton{background:transparent;border:none;color:white;font-size:26px;}");
         b->setCursor(Qt::PointingHandCursor);
         if (!iconPath.isEmpty()) {
             b->setIcon(QIcon(iconPath));
@@ -591,7 +591,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     m_lyricsHint = new AnimatedScaleButton(m_rootLayout);
     m_lyricsHint->setFixedSize(44, 44);
-    m_lyricsHint->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.75);font-size:28px;}");
+    m_lyricsHint->setStyleSheet("QPushButton{background:transparent;border:none;color:white;font-size:28px;}");
     m_lyricsHint->setIcon(QIcon(":/icons/text.svg"));
     m_lyricsHint->setIconSize(QSize(48, 48));
     m_lyricsHint->setCursor(Qt::PointingHandCursor);
@@ -649,7 +649,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     auto makeCtrlBtn = [&](const QString &iconPath, const QString &fallbackTxt, int iconSz, bool fixedSz = false) {
         auto *b = new AnimatedScaleButton(m_playbackControls);
-        b->setStyleSheet("QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);}QPushButton:hover{color:white;}");
+        b->setStyleSheet("QPushButton{background:transparent;border:none;color:white;}");
         b->setCursor(Qt::PointingHandCursor);
         if (!iconPath.isEmpty()) {
             b->setIcon(QIcon(iconPath));
@@ -851,10 +851,7 @@ bool FullscreenPlayer::eventFilter(QObject *w, QEvent *e)
                     }
                 }
                 // Эффект нажатия при закрытии по клику в пустоту
-                m_hintExtPress = true;
-                m_hintExtScale = 0.85f;
-                m_hintExtScaleV = 0.0f;
-                QTimer::singleShot(120, this, [this]{ m_hintExtPress = false; });
+                m_lyricsHint->pulse();
                 setLyricsVisible(false, true);
                 return true;
             }
@@ -1093,9 +1090,7 @@ void FullscreenPlayer::updateShuffleState(bool enabled, int mode) {
         m_shuffleBtn->setIcon(QIcon(":/icons/noshuffle.svg"));
 
     Q_UNUSED(mode);
-    m_shuffleBtn->setStyleSheet(enabled
-        ? "QPushButton{background:transparent;border:none;color:white;font-size:20px;}"
-        : "QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:20px;}QPushButton:hover{color:white;}");
+    m_shuffleBtn->setStyleSheet("QPushButton{background:transparent;border:none;color:white;}");
 }
 void FullscreenPlayer::updateRepeatState(int mode) {
     if (mode == 2)
@@ -1104,9 +1099,7 @@ void FullscreenPlayer::updateRepeatState(int mode) {
         m_repeatBtn->setIcon(QIcon(":/icons/repeatplaylist.svg"));
     else
         m_repeatBtn->setIcon(QIcon(":/icons/norepeat.svg"));
-    m_repeatBtn->setStyleSheet(mode > 0
-        ? "QPushButton{background:transparent;border:none;color:white;font-size:20px;}"
-        : "QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:20px;}QPushButton:hover{color:white;}");
+    m_repeatBtn->setStyleSheet("QPushButton{background:transparent;border:none;color:white;}");
 }
 
 bool FullscreenPlayer::hasLyrics() const { return m_lyricsSyncedAvailable || !m_lyricsPlainLines.isEmpty(); }
@@ -1802,10 +1795,6 @@ void FullscreenPlayer::animateTick()
     const int w = width(), h = height();
     bool isMouseInside = (pos.x() >= -2 && pos.x() <= w+2 && pos.y() >= -2 && pos.y() <= h+2);
     bool inRight = isMouseInside && ((w - pos.x()) <= w * 0.20f);
-
-    float hintScaleTarget = m_hintExtPress ? 0.85f : (inRight ? 1.12f : 1.0f);
-    m_hintExtScale = springStep1D(m_hintExtScale, hintScaleTarget, m_hintExtScaleV, dt, 350.f, 28.f);
-    m_lyricsHint->setScale(qBound(0.5f, m_hintExtScale, 1.5f));
 
     if (isMouseInside && !m_userSeeking) {
         bool inBottom = (h - pos.y()) <= h * 0.20;
