@@ -649,9 +649,11 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     pl->addLayout(tl);
     m_seekSlider = new ClickableSlider(Qt::Horizontal, m_seekBarArea);
     m_seekSlider->setStyleSheet(
-        "QSlider::groove:horizontal{height:6px;background:rgba(255,255,255,0.25);border-radius:3px;}"
-        "QSlider::sub-page:horizontal{background:rgba(255,255,255,0.9);border-radius:3px;}"
-        "QSlider::handle:horizontal{width:0px;height:0px;}");
+        "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
+        "QSlider::groove:horizontal{height:6px;background:rgba(255,255,255,0.25);border-radius:3px;border: none;}"
+        "QSlider::sub-page:horizontal{background:rgba(255,255,255,0.9);border-radius:3px;border: none;}"
+        "QSlider::handle:horizontal{width:12px;height:12px;margin:-3px 0;border-radius:6px;background:transparent;border: none;}"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal{background:#fff;border: none;}");
     m_seekSlider->setCursor(Qt::PointingHandCursor);
     pl->addWidget(m_seekSlider);
 
@@ -705,11 +707,11 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setFixedWidth(80);
     m_volumeSlider->setStyleSheet(
-        "QSlider { min-height: 16px; background: transparent; }"
-        "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,0.25);border-radius:2px;}"
-        "QSlider::sub-page:horizontal{background:rgba(255,255,255,0.85);border-radius:2px;}"
-        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;}"
-        "QSlider[hoverActive=\"true\"]::handle:horizontal{background:#fff;}");
+        "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
+        "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,0.25);border-radius:2px;border: none;}"
+        "QSlider::sub-page:horizontal{background:rgba(255,255,255,0.85);border-radius:2px;border: none;}"
+        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;border: none;}"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal{background:#fff;border: none;}");
     volRow->addWidget(m_muteBtn);
     volRow->addWidget(m_volumeSlider);
 
@@ -1870,12 +1872,11 @@ void FullscreenPlayer::animateTick()
 
     // Fade only the volume slider (which belongs to the disappearing playback controls)
     m_volumeSlider->setStyleSheet(QString(
-        "QSlider { min-height: 16px; background: transparent; } QSlider:focus { outline: none; }"
-        "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,%1);border-radius:2px;}"
-        "QSlider::sub-page:horizontal{background:rgba(255,255,255,%2);border-radius:2px;}"
-        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;}"
-        "QSlider:hover::handle:horizontal{background:#fff;}"
-        "QSlider::handle:horizontal:hover{background:#fff;}")
+        "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
+        "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,%1);border-radius:2px;border: none;}"
+        "QSlider::sub-page:horizontal{background:rgba(255,255,255,%2);border-radius:2px;border: none;}"
+        "QSlider::handle:horizontal{width:12px;height:12px;margin:-4px 0;border-radius:6px;background:transparent;border: none;}"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal{background:#fff;border: none;}")
         .arg((int)(63 * m_controlsAlpha))
         .arg((int)(216 * m_controlsAlpha)));
 

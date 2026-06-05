@@ -794,11 +794,11 @@ void MusicPlayer::setupUI()
     m_volumeLabel->installEventFilter(this);
 
     QString sliderStyle =
-        "QSlider { min-height: 16px; background: transparent; }"
-        "QSlider::groove:horizontal { height: 4px; background: #4d4d4d; border-radius: 2px; }"
-        "QSlider::sub-page:horizontal { background: #b3b3b3; border-radius: 2px; }"
-        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: transparent; }"
-        "QSlider[hoverActive=\"true\"]::handle:horizontal { background: #fff; }";
+        "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
+        "QSlider::groove:horizontal { height: 4px; background: #4d4d4d; border-radius: 2px; border: none; }"
+        "QSlider::sub-page:horizontal { background: #b3b3b3; border-radius: 2px; border: none; }"
+        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: transparent; border: none; }"
+        "QSlider[hoverActive=\"true\"]::handle:horizontal { background: #fff; border: none; }";
 
     m_volumeSlider = new ClickableSlider(Qt::Horizontal);
     m_volumeSlider->setRange(0, 100);
