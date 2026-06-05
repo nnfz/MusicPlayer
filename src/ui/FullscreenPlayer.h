@@ -82,6 +82,7 @@ public:
     void setScale(float s) { m_scale = s; update(); }
     float groupOpacity() const { return m_groupOpacity; }
     void setGroupOpacity(float o) { m_groupOpacity = o; update(); }
+    void setIconAlignment(Qt::Alignment a) { m_iconAlignment = a; update(); }
 
     void pulse() {
         m_anim->stop();
@@ -106,7 +107,9 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *e) override {
         QPushButton::mouseReleaseEvent(e);
-        m_anim->stop(); m_anim->setEndValue(rect().contains(e->pos()) ? 1.15f : 1.0f); m_anim->start();
+        m_anim->stop();
+        m_anim->setEndValue(underMouse() ? 1.15f : 1.0f);
+        m_anim->start();
     }
     void paintEvent(QPaintEvent *e) override {
         Q_UNUSED(e);
@@ -124,6 +127,7 @@ protected:
         initStyleOption(&opt);
         style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
+        QRect cr = contentsRect();
         if (!icon().isNull()) {
             QPixmap pix = icon().pixmap(iconSize(), isEnabled() ? (underMouse() ? QIcon::Active : QIcon::Normal) : QIcon::Disabled, isDown() ? QIcon::On : QIcon::Off);
             
@@ -135,20 +139,28 @@ protected:
                 pixPainter.end();
             }
             
-            QRect iconRect(rect().center() - pix.rect().center(), pix.size());
+            QRect iconRect;
+            if (m_iconAlignment & Qt::AlignLeft) {
+                iconRect = QRect(QPoint(cr.left(), cr.top() + (cr.height() - pix.height()) / 2), pix.size());
+            } else if (m_iconAlignment & Qt::AlignRight) {
+                iconRect = QRect(QPoint(cr.right() - pix.width() + 1, cr.top() + (cr.height() - pix.height()) / 2), pix.size());
+            } else {
+                iconRect = QRect(cr.center() - pix.rect().center(), pix.size());
+            }
             p.drawPixmap(iconRect, pix);
         } else if (!text().isEmpty()) {
             QColor txtColor = palette().color(QPalette::ButtonText);
             txtColor.setAlphaF(m_groupOpacity);
             p.setPen(txtColor);
             p.setFont(font());
-            p.drawText(rect(), Qt::AlignCenter, text());
+            p.drawText(cr, Qt::AlignCenter, text());
         }
     }
 private:
     float m_scale = 1.0f;
     float m_groupOpacity = 1.0f;
     QPropertyAnimation* m_anim;
+    Qt::Alignment m_iconAlignment = Qt::AlignCenter;
 };
 
 class FullscreenPlayer : public QWidget

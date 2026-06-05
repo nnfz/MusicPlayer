@@ -465,10 +465,20 @@ void MarqueeLabel::paintEvent(QPaintEvent *) {
     p.setRenderHint(QPainter::TextAntialiasing);
     p.setOpacity(m_opacity);
     p.setFont(m_font);
-    p.setPen(m_color);
     if (m_textW <= width()) {
+        p.setPen(m_color);
         p.drawText(rect(), m_alignment | Qt::TextSingleLine, m_text);
     } else {
+        QLinearGradient grad(0, 0, width(), 0);
+        QColor transparentColor = m_color;
+        transparentColor.setAlpha(0);
+        qreal fadeRatio = qBound(0.0, 24.0 / width(), 0.4);
+        grad.setColorAt(0.0, transparentColor);
+        grad.setColorAt(fadeRatio, m_color);
+        grad.setColorAt(1.0 - fadeRatio, m_color);
+        grad.setColorAt(1.0, transparentColor);
+        p.setPen(QPen(QBrush(grad), 1.0));
+
         const qreal dist = m_textW + kGap;
         p.drawText(rect().translated(-m_offset, 0.0),        Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextDontClip, m_text);
         p.drawText(rect().translated(-m_offset + dist, 0.0), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextDontClip, m_text);
@@ -687,7 +697,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     QHBoxLayout *volRow = new QHBoxLayout();
     volRow->setContentsMargins(0,0,0,0);
     volRow->setSpacing(10);
-    m_muteBtn = makeCtrlBtn("", QString::fromUtf8("\xF0\x9F\x94\x8A"), 16);
+    m_muteBtn = makeCtrlBtn(":/icons/volmax.svg", QString(), 20);
+    m_muteBtn->setFixedSize(50, 40);
+    m_muteBtn->setIconAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_muteBtn->setIconSize(QSize(40, 20));
     m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_playbackControls);
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setFixedWidth(80);
@@ -1080,9 +1093,18 @@ void FullscreenPlayer::updateVolume(int value)
     m_volumeSlider->blockSignals(true);
     m_volumeSlider->setValue(m_volumeValue);
     m_volumeSlider->blockSignals(false);
-    if      (m_volumeValue == 0)  m_muteBtn->setText(QString::fromUtf8("\xF0\x9F\x94\x87"));
-    else if (m_volumeValue < 50)  m_muteBtn->setText(QString::fromUtf8("\xF0\x9F\x94\x89"));
-    else                           m_muteBtn->setText(QString::fromUtf8("\xF0\x9F\x94\x8A"));
+
+    m_muteBtn->setIconSize(QSize(20, 20));
+    if (m_volumeValue == 0) {
+        m_muteBtn->setIcon(QIcon(":/icons/mute.svg"));
+    } else if (m_volumeValue < 33) {
+        m_muteBtn->setIcon(QIcon(":/icons/volmin.svg"));
+    } else if (m_volumeValue < 66) {
+        m_muteBtn->setIcon(QIcon(":/icons/volmed.svg"));
+    } else {
+        m_muteBtn->setIcon(QIcon(":/icons/volmax.svg"));
+    }
+    m_muteBtn->setText(QString());
 }
 
 void FullscreenPlayer::updateLikeState(bool liked)      { Q_UNUSED(liked); }

@@ -785,8 +785,11 @@ void MusicPlayer::setupUI()
     rightSection->setAlignment(Qt::AlignVCenter);
 
     m_volumeLabel = new AnimatedScaleButton();
-    m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x8A"));
-    m_volumeLabel->setStyleSheet("font-size: 16px; color: #b3b3b3; background: transparent;");
+    m_volumeLabel->setFixedSize(40, 40);
+    m_volumeLabel->setIconAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_volumeLabel->setIcon(QIcon(":/icons/volmax.svg"));
+    m_volumeLabel->setIconSize(QSize(32, 24));
+    m_volumeLabel->setStyleSheet("background: transparent; border: none; margin-left: 4px;");
     m_volumeLabel->setCursor(Qt::PointingHandCursor);
     m_volumeLabel->installEventFilter(this);
 
@@ -4176,9 +4179,18 @@ void MusicPlayer::onEnginePlaybackFinished() {
 void MusicPlayer::volumeChanged(int value) {
     float vol = value / 100.0f;
     if (m_engine) m_engine->setVolume(vol);
-    if (value == 0) m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x87"));
-    else if (value < 50) m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x89"));
-    else m_volumeLabel->setText(QString::fromUtf8("\xF0\x9F\x94\x8A"));
+
+    m_volumeLabel->setIconSize(QSize(40, 20));
+    if (value == 0) {
+        m_volumeLabel->setIcon(QIcon(":/icons/mute.svg"));
+    } else if (value < 33) {
+        m_volumeLabel->setIcon(QIcon(":/icons/volmin.svg"));
+    } else if (value < 66) {
+        m_volumeLabel->setIcon(QIcon(":/icons/volmed.svg"));
+    } else {
+        m_volumeLabel->setIcon(QIcon(":/icons/volmax.svg"));
+    }
+    m_volumeLabel->setText(QString());
 
     if (m_fullscreenPlayer) {
         m_fullscreenPlayer->blockSignals(true);

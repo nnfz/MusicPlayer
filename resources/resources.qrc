@@ -14,5 +14,9 @@
         <file>icons/norepeat.svg</file>
         <file>icons/noshuffle.svg</file>
         <file>icons/heart.svg</file>
+        <file>icons/volmin.svg</file>
+        <file>icons/volmed.svg</file>
+        <file>icons/volmax.svg</file>
+        <file>icons/mute.svg</file>
     </qresource>
 </RCC>
