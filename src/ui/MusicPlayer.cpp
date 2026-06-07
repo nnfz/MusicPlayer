@@ -712,7 +712,7 @@ void MusicPlayer::setupUI()
     trackInfoLayout->addWidget(m_artistLabel);
 
     m_likeButton = new AnimatedScaleButton();
-    m_likeButton->setFixedSize(40, 40);
+    m_likeButton->setFixedSize(28, 28);
     m_likeButton->setIconSize(QSize(16, 16));
     m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
 
@@ -785,13 +785,13 @@ void MusicPlayer::setupUI()
     rightSection->setAlignment(Qt::AlignVCenter);
 
     m_volumeLabel = new AnimatedScaleButton();
-    m_volumeLabel->setFixedSize(40, 40);
+    m_volumeLabel->setFixedSize(50, 40);
     m_volumeLabel->setIconAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_volumeLabel->setIcon(QIcon(":/icons/volmax.svg"));
-    m_volumeLabel->setIconSize(QSize(32, 24));
+    m_volumeLabel->setProperty("currentIconPath", ":/icons/volmax.svg");
+    m_volumeLabel->setIconSize(QSize(40, 20));
     m_volumeLabel->setStyleSheet("background: transparent; border: none; margin-left: 4px;");
     m_volumeLabel->setCursor(Qt::PointingHandCursor);
-    m_volumeLabel->installEventFilter(this);
 
     QString sliderStyle =
         "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
@@ -942,6 +942,17 @@ void MusicPlayer::setupConnections()
         });
     });
     connect(m_volumeSlider, &ClickableSlider::valueChanged, this, &MusicPlayer::volumeChanged);
+    
+    connect(m_volumeLabel, &QPushButton::clicked, this, [this]() {
+        static int s_preMuteVol = 60;
+        int v = m_volumeSlider->value();
+        if (v > 0) {
+            s_preMuteVol = v;
+            m_volumeSlider->setValue(0);
+        } else {
+            m_volumeSlider->setValue(s_preMuteVol > 0 ? s_preMuteVol : 60);
+        }
+    });
 
     connect(m_engine, &GaplessAudioEngine::positionChanged, this, &MusicPlayer::updatePosition);
     connect(m_engine, &GaplessAudioEngine::durationChanged, this, &MusicPlayer::updateDuration);
@@ -1295,7 +1306,7 @@ void MusicPlayer::updateLikeButtonState()
 
     if (m_currentIndex < 0 || m_currentIndex >= m_tracks.count()) {
         m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
-        m_likeButton->setStyleSheet("QPushButton { margin: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } QPushButton:hover { background: rgba(255, 255, 255, 0.2); }");
+        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 2px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } AnimatedScaleButton:hover { background: rgba(255, 255, 255, 0.2); }");
         return;
     }
 
@@ -1307,9 +1318,9 @@ void MusicPlayer::updateLikeButtonState()
     // or just rely on the background color change. We'll set the background to solid white when liked.
     m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
     if (liked) {
-        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 8px; background: white; border-radius: 12px; color: #121212; }"); // color sets icon tint if svg is configured for it
+        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 2px; background: white; border-radius: 12px; color: #121212; }"); // color sets icon tint if svg is configured for it
     } else {
-        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } AnimatedScaleButton:hover { background: rgba(255, 255, 255, 0.2); }");
+        m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 2px; background: rgba(255, 255, 255, 0.1); border-radius: 12px; color: white; } AnimatedScaleButton:hover { background: rgba(255, 255, 255, 0.2); }");
     }
 
     if (m_fullscreenPlayer)
@@ -4180,15 +4191,20 @@ void MusicPlayer::volumeChanged(int value) {
     float vol = value / 100.0f;
     if (m_engine) m_engine->setVolume(vol);
 
-    m_volumeLabel->setIconSize(QSize(40, 20));
+    QString targetIconPath;
     if (value == 0) {
-        m_volumeLabel->setIcon(QIcon(":/icons/mute.svg"));
+        targetIconPath = ":/icons/mute.svg";
     } else if (value < 33) {
-        m_volumeLabel->setIcon(QIcon(":/icons/volmin.svg"));
+        targetIconPath = ":/icons/volmin.svg";
     } else if (value < 66) {
-        m_volumeLabel->setIcon(QIcon(":/icons/volmed.svg"));
+        targetIconPath = ":/icons/volmed.svg";
     } else {
-        m_volumeLabel->setIcon(QIcon(":/icons/volmax.svg"));
+        targetIconPath = ":/icons/volmax.svg";
+    }
+
+    if (m_volumeLabel->property("currentIconPath").toString() != targetIconPath) {
+        m_volumeLabel->setProperty("currentIconPath", targetIconPath);
+        m_volumeLabel->setIconAnimated(QIcon(targetIconPath));
     }
     m_volumeLabel->setText(QString());
 

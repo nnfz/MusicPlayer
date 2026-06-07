@@ -679,10 +679,10 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_prevBtn    = makeCtrlBtn(":/icons/playbackward.svg", QString::fromUtf8("\xE2\x8F\xAE"), 24);
     m_playBtn    = makeCtrlBtn(":/icons/play.svg", QString::fromUtf8("\xE2\x96\xB6"), 32, true);
     m_nextBtn    = makeCtrlBtn(":/icons/playforward.svg", QString::fromUtf8("\xE2\x8F\xAD"), 24);
-    m_repeatBtn  = makeCtrlBtn(":/icons/norepeat.svg", QString::fromUtf8("\xE2\xBF\x81"), 24);
+    m_repeatBtn  = makeCtrlBtn(":/icons/repeat.svg", QString::fromUtf8("\xE2\xBF\x81"), 24);
 
     QWidget *leftSpacer = new QWidget(m_playbackControls);
-    leftSpacer->setFixedWidth(120);
+    leftSpacer->setFixedWidth(160);
     bl->addWidget(leftSpacer);
     bl->addStretch(1);
 
@@ -698,14 +698,14 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
 
     QHBoxLayout *volRow = new QHBoxLayout();
     volRow->setContentsMargins(0,0,0,0);
-    volRow->setSpacing(10);
+    volRow->setSpacing(0);
     m_muteBtn = makeCtrlBtn(":/icons/volmax.svg", QString(), 20);
-    m_muteBtn->setFixedSize(50, 40);
+    m_muteBtn->setFixedSize(40, 40);
     m_muteBtn->setIconAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_muteBtn->setIconSize(QSize(40, 20));
     m_volumeSlider = new ClickableSlider(Qt::Horizontal, m_playbackControls);
     m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setFixedWidth(80);
+    m_volumeSlider->setFixedWidth(120);
     m_volumeSlider->setStyleSheet(
         "QSlider { min-height: 16px; background: transparent; border: none; } QSlider:focus { outline: none; border: none; }"
         "QSlider::groove:horizontal{height:4px;background:rgba(255,255,255,0.25);border-radius:2px;border: none;}"
@@ -720,7 +720,7 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     rbl->setContentsMargins(0,0,0,0);
     rbl->addStretch();
     rbl->addLayout(volRow);
-    rightBtns->setFixedWidth(120);
+    rightBtns->setFixedWidth(160);
     bl->addWidget(rightBtns);
 
     m_paletteTransitionAnim = new QVariantAnimation(this);
@@ -1096,15 +1096,20 @@ void FullscreenPlayer::updateVolume(int value)
     m_volumeSlider->setValue(m_volumeValue);
     m_volumeSlider->blockSignals(false);
 
-    m_muteBtn->setIconSize(QSize(20, 20));
+    QString targetIconPath;
     if (m_volumeValue == 0) {
-        m_muteBtn->setIcon(QIcon(":/icons/mute.svg"));
+        targetIconPath = ":/icons/mute.svg";
     } else if (m_volumeValue < 33) {
-        m_muteBtn->setIcon(QIcon(":/icons/volmin.svg"));
+        targetIconPath = ":/icons/volmin.svg";
     } else if (m_volumeValue < 66) {
-        m_muteBtn->setIcon(QIcon(":/icons/volmed.svg"));
+        targetIconPath = ":/icons/volmed.svg";
     } else {
-        m_muteBtn->setIcon(QIcon(":/icons/volmax.svg"));
+        targetIconPath = ":/icons/volmax.svg";
+    }
+    
+    if (m_muteBtn->property("currentIconPath").toString() != targetIconPath) {
+        m_muteBtn->setProperty("currentIconPath", targetIconPath);
+        m_muteBtn->setIconAnimated(QIcon(targetIconPath));
     }
     m_muteBtn->setText(QString());
 }

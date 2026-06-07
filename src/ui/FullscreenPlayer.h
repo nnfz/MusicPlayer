@@ -72,17 +72,40 @@ private:
 class AnimatedScaleButton : public QPushButton {
     Q_OBJECT
     Q_PROPERTY(float scale READ scale WRITE setScale)
+    Q_PROPERTY(float crossfade READ crossfade WRITE setCrossfade)
 public:
     AnimatedScaleButton(QWidget *parent = nullptr) : QPushButton(parent) {
         m_anim = new QPropertyAnimation(this, "scale", this);
         m_anim->setDuration(120);
         m_anim->setEasingCurve(QEasingCurve::OutQuad);
+        
+        m_fadeAnim = new QPropertyAnimation(this, "crossfade", this);
+        m_fadeAnim->setDuration(400);
+        m_fadeAnim->setEasingCurve(QEasingCurve::InOutQuad);
     }
     float scale() const { return m_scale; }
     void setScale(float s) { m_scale = s; update(); }
     float groupOpacity() const { return m_groupOpacity; }
     void setGroupOpacity(float o) { m_groupOpacity = o; update(); }
     void setIconAlignment(Qt::Alignment a) { m_iconAlignment = a; update(); }
+    
+    float crossfade() const { return m_crossfade; }
+    void setCrossfade(float f) { m_crossfade = f; update(); }
+
+    void setIconAnimated(const QIcon &newIcon) {
+        m_oldIcon = icon();
+        setIcon(newIcon);
+        m_crossfade = 0.0f;
+        m_fadeAnim->stop();
+        m_fadeAnim->setStartValue(0.0f);
+        m_fadeAnim->setEndValue(1.0f);
+        m_fadeAnim->start();
+        
+        // Force the scale animation back to the correct state since setIcon can interrupt it
+        m_anim->stop();
+        m_anim->setEndValue(isActuallyUnderMouse() ? 1.15f : 1.0f);
+        m_anim->start();
+    }
 
     void pulse() {
         m_anim->stop();
@@ -92,6 +115,10 @@ public:
         m_anim->start();
     }
 
+    bool isActuallyUnderMouse() const {
+        return rect().contains(mapFromGlobal(QCursor::pos()));
+    }
+
 protected:
     void enterEvent(QEnterEvent *e) override {
         QPushButton::enterEvent(e);
@@ -99,6 +126,7 @@ protected:
     }
     void leaveEvent(QEvent *e) override {
         QPushButton::leaveEvent(e);
+        if (isActuallyUnderMouse()) return;
         m_anim->stop(); m_anim->setEndValue(1.0f); m_anim->start();
     }
     void mousePressEvent(QMouseEvent *e) override {
@@ -108,8 +136,21 @@ protected:
     void mouseReleaseEvent(QMouseEvent *e) override {
         QPushButton::mouseReleaseEvent(e);
         m_anim->stop();
-        m_anim->setEndValue(underMouse() ? 1.15f : 1.0f);
+        // Force hover state (1.15f) on release. 
+        // We know the mouse is here because they just clicked it.
+        // This defeats any bugs where Qt layout shifts cause hit-tests to fail.
+        m_anim->setEndValue(1.15f);
         m_anim->start();
+        
+        // Safety net: if they really moved the mouse away instantly, leaveEvent will catch it later, 
+        // or we can schedule a delayed check.
+        QTimer::singleShot(150, this, [this]() {
+            if (!isActuallyUnderMouse()) {
+                m_anim->stop();
+                m_anim->setEndValue(1.0f);
+                m_anim->start();
+            }
+        });
     }
     void paintEvent(QPaintEvent *e) override {
         Q_UNUSED(e);
@@ -119,18 +160,29 @@ protected:
         
         p.setOpacity(m_groupOpacity);
         
-        p.translate(rect().center());
+        QRect cr = contentsRect();
+        QPointF anchor = rect().center();
+        
+        if (!icon().isNull()) {
+            QPixmap dummyPix = icon().pixmap(iconSize());
+            if (m_iconAlignment & Qt::AlignLeft) {
+                anchor = QRect(QPoint(cr.left(), cr.top() + (cr.height() - dummyPix.height()) / 2), dummyPix.size()).center();
+            } else if (m_iconAlignment & Qt::AlignRight) {
+                anchor = QRect(QPoint(cr.right() - dummyPix.width() + 1, cr.top() + (cr.height() - dummyPix.height()) / 2), dummyPix.size()).center();
+            }
+        }
+        
+        p.translate(anchor);
         p.scale(m_scale, m_scale);
-        p.translate(-rect().center());
+        p.translate(-anchor);
 
         QStyleOptionButton opt;
         initStyleOption(&opt);
         style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
-        QRect cr = contentsRect();
-        if (!icon().isNull()) {
-            QPixmap pix = icon().pixmap(iconSize(), isEnabled() ? (underMouse() ? QIcon::Active : QIcon::Normal) : QIcon::Disabled, isDown() ? QIcon::On : QIcon::Off);
-            
+        auto drawIcon = [&](const QIcon& icn, float alpha) {
+    if (icn.isNull() || alpha <= 0.0f) return;
+    QPixmap pix = icn.pixmap(iconSize(), isEnabled() ? (isActuallyUnderMouse() ? QIcon::Active : QIcon::Normal) : QIcon::Disabled, isDown() ? QIcon::On : QIcon::Off);
             QColor iconColor = palette().color(QPalette::ButtonText);
             if (iconColor.isValid() && iconColor.alpha() > 0) {
                 QPainter pixPainter(&pix);
@@ -147,7 +199,22 @@ protected:
             } else {
                 iconRect = QRect(cr.center() - pix.rect().center(), pix.size());
             }
+            
+            float oldOpacity = p.opacity();
+            p.setOpacity(oldOpacity * alpha);
             p.drawPixmap(iconRect, pix);
+            p.setOpacity(oldOpacity);
+        };
+
+        if (!icon().isNull()) {
+            if (m_crossfade < 1.0f && !m_oldIcon.isNull()) {
+                p.setCompositionMode(QPainter::CompositionMode_Plus);
+                drawIcon(m_oldIcon, 1.0f - m_crossfade);
+                drawIcon(icon(), m_crossfade);
+                p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            } else {
+                drawIcon(icon(), 1.0f);
+            }
         } else if (!text().isEmpty()) {
             QColor txtColor = palette().color(QPalette::ButtonText);
             txtColor.setAlphaF(m_groupOpacity);
@@ -161,6 +228,9 @@ private:
     float m_groupOpacity = 1.0f;
     QPropertyAnimation* m_anim;
     Qt::Alignment m_iconAlignment = Qt::AlignCenter;
+    float m_crossfade = 1.0f;
+    QPropertyAnimation* m_fadeAnim;
+    QIcon m_oldIcon;
 };
 
 class FullscreenPlayer : public QWidget
