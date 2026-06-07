@@ -247,8 +247,12 @@ private:
     QLabel *m_bottomCoverLabel = nullptr;
     AnimatedScaleButton *m_volumeLabel = nullptr;
     QLabel *m_trackCountLabel = nullptr;
-
     QLineEdit *m_searchBox = nullptr;
+
+    QWidget *m_windowControls = nullptr;
+    QPushButton *m_minBtn = nullptr;
+    QPushButton *m_maxBtn = nullptr;
+    QPushButton *m_closeBtn = nullptr;
 
     bool m_userSeeking;
     bool m_seekPending;

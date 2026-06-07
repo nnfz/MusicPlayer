@@ -537,63 +537,52 @@ void MusicPlayer::setupUI()
     containerLayout->setSpacing(0);
     containerLayout->setContentsMargins(0, 0, 0, 0);
 
-    // --- Custom Title Bar ---
-    QWidget *titleBar = new QWidget();
-    titleBar->setObjectName("titleBarWidget");
-    titleBar->setFixedHeight(32);
-    titleBar->setStyleSheet("QWidget#titleBarWidget { background: transparent; }");
-    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
-    titleLayout->setContentsMargins(16, 0, 12, 0);
-    titleLayout->setSpacing(15);
+    // --- Floating Window Controls (outside m_mainUiContainer to avoid animation) ---
+    m_windowControls = new QWidget(centralWidget);
+    m_windowControls->setObjectName("windowControls");
+    m_windowControls->setFixedSize(140, 32);
+    m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
+    QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
+    winCtrlLayout->setContentsMargins(0, 0, 12, 0);
+    winCtrlLayout->setSpacing(15);
 
-    QLabel *appTitle = new QLabel("Music Player");
-    appTitle->setStyleSheet("color: #555; font-weight: bold; font-size: 11px;");
-    titleLayout->addWidget(appTitle);
-    titleLayout->addStretch();
-
-    QString btnStyle = "QPushButton { background: transparent; border: none; opacity: 0.5; }";
+    QString winBtnStyle = "QPushButton { background: transparent; border: none; opacity: 0.5; }";
     QSize hitAreaSize(30, 30);
     QSize iconSize(12, 12);
 
-    QPushButton *minBtn = new QPushButton();
-    minBtn->setObjectName("minimizeButton");
-    minBtn->setIcon(QIcon(":/icons/minimize.svg"));
-    minBtn->setIconSize(iconSize);
-    minBtn->setStyleSheet(btnStyle);
-    minBtn->setFixedSize(hitAreaSize);
-    connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
+    m_minBtn = new QPushButton(m_windowControls);
+    m_minBtn->setObjectName("minimizeButton");
+    m_minBtn->setIcon(QIcon(":/icons/minimize.svg"));
+    m_minBtn->setIconSize(iconSize);
+    m_minBtn->setStyleSheet(winBtnStyle);
+    m_minBtn->setFixedSize(hitAreaSize);
+    connect(m_minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
 
-    QPushButton *maxBtn = new QPushButton();
-    maxBtn->setObjectName("maximizeButton");
-    maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
-    maxBtn->setIconSize(iconSize);
-    maxBtn->setStyleSheet(btnStyle);
-    maxBtn->setFixedSize(hitAreaSize);
-    connect(maxBtn, &QPushButton::clicked, this, [this, maxBtn, iconSize]() {
-        if (isMaximized()) {
-            showNormal();
-            maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
-        } else {
-            showMaximized();
-            maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
-        }
-        maxBtn->setIconSize(iconSize);
+    m_maxBtn = new QPushButton(m_windowControls);
+    m_maxBtn->setObjectName("maximizeButton");
+    m_maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+    m_maxBtn->setIconSize(iconSize);
+    m_maxBtn->setStyleSheet(winBtnStyle);
+    m_maxBtn->setFixedSize(hitAreaSize);
+    connect(m_maxBtn, &QPushButton::clicked, this, [this, iconSize]() {
+        if (isMaximized()) showNormal();
+        else showMaximized();
+        m_maxBtn->setIconSize(iconSize);
     });
 
-    QPushButton *closeBtn = new QPushButton();
-    closeBtn->setObjectName("closeButton");
-    closeBtn->setIcon(QIcon(":/icons/close.svg"));
-    closeBtn->setIconSize(iconSize);
-    closeBtn->setStyleSheet(btnStyle);
-    closeBtn->setFixedSize(hitAreaSize);
-    connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+    m_closeBtn = new QPushButton(m_windowControls);
+    m_closeBtn->setObjectName("closeButton");
+    m_closeBtn->setIcon(QIcon(":/icons/close.svg"));
+    m_closeBtn->setIconSize(iconSize);
+    m_closeBtn->setStyleSheet(winBtnStyle);
+    m_closeBtn->setFixedSize(hitAreaSize);
+    connect(m_closeBtn, &QPushButton::clicked, this, &QWidget::close);
 
-    titleLayout->addWidget(minBtn);
-    titleLayout->addWidget(maxBtn);
-    titleLayout->addWidget(closeBtn);
-
-    containerLayout->addWidget(titleBar);
-    titleBar->installEventFilter(this);
+    winCtrlLayout->addStretch();
+    winCtrlLayout->addWidget(m_minBtn);
+    winCtrlLayout->addWidget(m_maxBtn);
+    winCtrlLayout->addWidget(m_closeBtn);
+    m_windowControls->raise();
 
     // ========== SPLITTER: sidebar | content ==========
     m_splitter = new QSplitter(Qt::Horizontal);
@@ -712,6 +701,7 @@ void MusicPlayer::setupUI()
     contentLayout->setContentsMargins(4, 10, 10, 10);
 
     QHBoxLayout *toolbarLayout = new QHBoxLayout();
+    toolbarLayout->setContentsMargins(0, 0, 130, 0); // Leave space for floating window controls
 
     m_searchBox = new QLineEdit();
     m_searchBox->setPlaceholderText(QString::fromUtf8("\xF0\x9F\x94\x8D Search tracks..."));
@@ -2566,6 +2556,10 @@ void MusicPlayer::dragEnterEvent(QDragEnterEvent *event) { if (event->mimeData()
 void MusicPlayer::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
+    if (m_windowControls) {
+        m_windowControls->move(width() - m_windowControls->width(), 0);
+        m_windowControls->raise();
+    }
     if (m_bottomGlow) {
         m_bottomGlow->move(0, centralWidget()->height() - m_bottomGlow->height());
     }
@@ -2580,16 +2574,16 @@ void MusicPlayer::changeEvent(QEvent *event)
 {
     QMainWindow::changeEvent(event);
     if (event->type() == QEvent::WindowStateChange) {
-        QPushButton *maxBtn = findChild<QPushButton*>("maximizeButton");
         const bool maximized = isMaximized();
-        if (maxBtn) {
+        if (m_maxBtn) {
             if (maximized) {
-                maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
+                m_maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
                 m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: none; border-radius: 0px; }");
             } else {
-                maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+                m_maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
                 m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: 1px solid #333; border-radius: 10px; }");
             }
+            m_maxBtn->setIconSize(QSize(12, 12));
         }
 #ifdef Q_OS_WIN
         applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()), !maximized);
@@ -2640,7 +2634,6 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
         *result = 0;
         return true;
     } else if (msg->message == WM_NCHITTEST) {
-        // Handle resizing from edges since we removed the standard frame
         const LONG border_width = 8;
         HWND hwnd = msg->hwnd;
         POINT pt;
@@ -2651,26 +2644,43 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
         RECT rcClient;
         GetClientRect(hwnd, &rcClient);
 
-        *result = 0;
-        bool hit = false;
+        // 1. Handle Resize Borders
         if (pt.y < border_width) {
             if (pt.x < border_width) *result = HTTOPLEFT;
             else if (pt.x >= rcClient.right - border_width) *result = HTTOPRIGHT;
             else *result = HTTOP;
-            hit = true;
+            return true;
         } else if (pt.y >= rcClient.bottom - border_width) {
             if (pt.x < border_width) *result = HTBOTTOMLEFT;
             else if (pt.x >= rcClient.right - border_width) *result = HTBOTTOMRIGHT;
             else *result = HTBOTTOM;
-            hit = true;
+            return true;
         } else if (pt.x < border_width) {
             *result = HTLEFT;
-            hit = true;
+            return true;
         } else if (pt.x >= rcClient.right - border_width) {
             *result = HTRIGHT;
-            hit = true;
+            return true;
         }
-        if (hit) return true;
+
+        // 2. Handle Title/Dragging Area (top part of the window)
+        if (pt.y < 40) {
+            QWidget *child = childAt(pt.x, pt.y);
+            bool isInteractive = false;
+            if (child) {
+                // List of widgets that SHOULD handle their own mouse events
+                if (qobject_cast<QPushButton*>(child) || 
+                    qobject_cast<QLineEdit*>(child) || 
+                    qobject_cast<QAbstractSlider*>(child)) {
+                    isInteractive = true;
+                }
+            }
+            
+            if (!isInteractive) {
+                *result = HTCAPTION;
+                return true;
+            }
+        }
     }
 #endif
     return QMainWindow::nativeEvent(eventType, message, result);
