@@ -538,7 +538,7 @@ void MusicPlayer::setupUI()
     containerLayout->setContentsMargins(0, 0, 0, 0);
 
     // --- Floating Window Controls (outside m_mainUiContainer to avoid animation) ---
-    m_windowControls = new QWidget(centralWidget);
+    m_windowControls = new QWidget(this);
     m_windowControls->setObjectName("windowControls");
     m_windowControls->setFixedSize(140, 32);
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
@@ -2557,7 +2557,7 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
     if (m_windowControls) {
-        m_windowControls->move(width() - m_windowControls->width(), 0);
+        m_windowControls->move(width() - m_windowControls->width(), 8);
         m_windowControls->raise();
     }
     if (m_bottomGlow) {
@@ -2566,8 +2566,12 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     if (m_blurLabel && m_blurLabel->isVisible() && !m_isFsAnimating) {
         m_blurLabel->setGeometry(centralWidget()->rect());
     }
-    if (m_fullscreenPlayer && !m_isFsAnimating)
+    if (m_fullscreenPlayer && !m_isFsAnimating) {
         m_fullscreenPlayer->setGeometry(rect());
+    }
+    if (m_windowControls) {
+        m_windowControls->raise();
+    }
 }
 
 void MusicPlayer::changeEvent(QEvent *event)
