@@ -612,11 +612,11 @@ void MusicPlayer::setupUI()
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
     winCtrlLayout->setSpacing(14); // Increased spacing between buttons
 
-    QSize hitAreaSize(30, 30); // Size 30x30
+    QSize hitAreaSize(32, 32); // Size 32x32
     
     auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
     minBtn->setObjectName("minimizeButton");
-    minBtn->setPadding(9); // Increased padding
+    minBtn->setPadding(9);
     minBtn->setHoverColor(QColor(255, 255, 255, 30));
     minBtn->setBaseOpacity(1.0);
     m_minBtn = minBtn;
@@ -624,7 +624,7 @@ void MusicPlayer::setupUI()
 
     auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
     maxBtn->setObjectName("maximizeButton");
-    maxBtn->setPadding(9); // Increased padding
+    maxBtn->setPadding(9);
     maxBtn->setHoverColor(QColor(255, 255, 255, 30));
     maxBtn->setBaseOpacity(1.0);
     m_maxBtn = maxBtn;
@@ -635,7 +635,7 @@ void MusicPlayer::setupUI()
 
     auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
     closeBtn->setObjectName("closeButton");
-    closeBtn->setPadding(9); // Increased padding
+    closeBtn->setPadding(9);
     closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
     closeBtn->setBaseOpacity(1.0);
     m_closeBtn = closeBtn;
@@ -773,7 +773,7 @@ void MusicPlayer::setupUI()
     m_trackCountLabel->setStyleSheet("color: #888; font-style: italic; font-size: 13px;");
 
     auto *settBtn = new FadingIconButton(QIcon(":/icons/options.svg"), QSize(32, 32), contentWidget);
-    settBtn->setPadding(6);
+    settBtn->setPadding(9);
     settBtn->setHoverColor(QColor(255, 255, 255, 30));
     settBtn->setBaseOpacity(1.0);
     m_settingsButton = settBtn;
@@ -784,7 +784,7 @@ void MusicPlayer::setupUI()
     toolbarLayout->addWidget(m_trackCountLabel);
     toolbarLayout->addSpacing(10);
     toolbarLayout->addWidget(m_settingsButton);
-    toolbarLayout->addSpacing(140); // Increased spacing to floating window controls
+    toolbarLayout->addSpacing(120); // Spacing to reserved for floating controls
 
     contentLayout->addLayout(toolbarLayout);
 
@@ -2623,15 +2623,20 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
 
     if (m_windowControls && m_settingsButton) {
-        // Find where the settings button is relative to the window (this)
-        QPoint settingsPos = m_settingsButton->mapTo(this, QPoint(0, 0));
-        
-        // Lower the buttons slightly more (targetY + 10)
-        int targetY = settingsPos.y() + (m_settingsButton->height() - m_windowControls->height()) / 2 + 10;
-        
-        // Position window controls aligned to the right edge of the window
-        m_windowControls->move(width() - m_windowControls->width() - 10, targetY);
-        m_windowControls->raise();
+        // Use a timer to ensure the layout has finished before calculating the position
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_windowControls || !m_settingsButton) return;
+            
+            // Map the settings button position to the main window's coordinates
+            QPoint posInWindow = m_settingsButton->mapTo(this, QPoint(0, 0));
+            
+            // Align centers vertically
+            int targetY = posInWindow.y() + (m_settingsButton->height() - m_windowControls->height()) / 2;
+            
+            // Move to the right edge with a 10px margin
+            m_windowControls->move(width() - m_windowControls->width() - 10, targetY);
+            m_windowControls->raise();
+        });
     }
 
     if (m_bottomGlow) {
