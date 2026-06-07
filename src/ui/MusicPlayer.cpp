@@ -73,6 +73,73 @@ void applyWindows11RoundedCornersAndShadow(HWND hwnd, bool round) {
 #endif
 
 namespace {
+class FadingIconButton : public QPushButton {
+public:
+    FadingIconButton(const QIcon &icon, const QSize &size, QWidget *parent = nullptr) 
+        : QPushButton(parent), m_baseOpacity(1.0), m_hoverFactor(0.0) 
+    {
+        setIcon(icon);
+        setFixedSize(size);
+        setCursor(Qt::PointingHandCursor);
+        m_anim = new QVariantAnimation(this);
+        m_anim->setDuration(200);
+        m_anim->setEasingCurve(QEasingCurve::OutCubic);
+        connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            m_hoverFactor = v.toReal();
+            update();
+        });
+        setAttribute(Qt::WA_StyledBackground, false);
+        setStyleSheet("background: transparent; border: none;");
+    }
+
+    void setBaseOpacity(qreal o) { m_baseOpacity = o; update(); }
+    void setHoverColor(const QColor &c) { m_hoverColor = c; }
+    void setPadding(int p) { m_padding = p; }
+
+protected:
+    void enterEvent(QEnterEvent *e) override {
+        QPushButton::enterEvent(e);
+        m_anim->stop();
+        m_anim->setStartValue(m_hoverFactor);
+        m_anim->setEndValue(1.0);
+        m_anim->start();
+    }
+    void leaveEvent(QEvent *e) override {
+        QPushButton::leaveEvent(e);
+        m_anim->stop();
+        m_anim->setStartValue(m_hoverFactor);
+        m_anim->setEndValue(0.0);
+        m_anim->start();
+    }
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        
+        if (m_hoverFactor > 0 && m_hoverColor.isValid()) {
+            QColor c = m_hoverColor;
+            c.setAlphaF(c.alphaF() * m_hoverFactor);
+            p.setBrush(c);
+            p.setPen(Qt::NoPen);
+            
+            int side = qMin(width(), height());
+            QRect squareRect((width() - side) / 2, (height() - side) / 2, side, side);
+            p.drawRoundedRect(squareRect, 2, 2);
+        }
+
+        p.setOpacity(m_baseOpacity + (1.0 - m_baseOpacity) * m_hoverFactor);
+        QRect iconRect = rect();
+        iconRect.adjust(m_padding, m_padding, -m_padding, -m_padding);
+        icon().paint(&p, iconRect, Qt::AlignCenter);
+    }
+
+private:
+    qreal m_baseOpacity;
+    qreal m_hoverFactor;
+    QColor m_hoverColor;
+    int m_padding = 6;
+    QVariantAnimation *m_anim;
+};
+
 // Qt metadata preload can destabilize startup on some Windows/FFmpeg hook stacks.
 // Keep disabled by default; TrackItem fallback metadata remains active.
 constexpr bool kEnableQtMetadataPreload = false;
@@ -537,52 +604,47 @@ void MusicPlayer::setupUI()
     containerLayout->setSpacing(0);
     containerLayout->setContentsMargins(0, 0, 0, 0);
 
-    // --- Floating Window Controls (outside m_mainUiContainer to avoid animation) ---
-    m_windowControls = new QWidget(this);
+    // --- Floating Window Controls (outside m_mainUiContainer to avoid animation/blur) ---
+    m_windowControls = new QWidget(centralWidget);
     m_windowControls->setObjectName("windowControls");
-    m_windowControls->setFixedSize(140, 32);
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
-    winCtrlLayout->setContentsMargins(0, 0, 12, 0);
-    winCtrlLayout->setSpacing(15);
+    winCtrlLayout->setContentsMargins(0, 0, 0, 0);
+    winCtrlLayout->setSpacing(2);
 
-    QString winBtnStyle = "QPushButton { background: transparent; border: none; opacity: 0.5; }";
-    QSize hitAreaSize(30, 30);
-    QSize iconSize(12, 12);
-
-    m_minBtn = new QPushButton(m_windowControls);
-    m_minBtn->setObjectName("minimizeButton");
-    m_minBtn->setIcon(QIcon(":/icons/minimize.svg"));
-    m_minBtn->setIconSize(iconSize);
-    m_minBtn->setStyleSheet(winBtnStyle);
-    m_minBtn->setFixedSize(hitAreaSize);
+    QSize hitAreaSize(32, 32);
+    
+    auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
+    minBtn->setObjectName("minimizeButton");
+    minBtn->setPadding(8);
+    minBtn->setHoverColor(QColor(255, 255, 255, 30));
+    minBtn->setBaseOpacity(1.0);
+    m_minBtn = minBtn;
     connect(m_minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
 
-    m_maxBtn = new QPushButton(m_windowControls);
-    m_maxBtn->setObjectName("maximizeButton");
-    m_maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
-    m_maxBtn->setIconSize(iconSize);
-    m_maxBtn->setStyleSheet(winBtnStyle);
-    m_maxBtn->setFixedSize(hitAreaSize);
-    connect(m_maxBtn, &QPushButton::clicked, this, [this, iconSize]() {
+    auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
+    maxBtn->setObjectName("maximizeButton");
+    maxBtn->setPadding(8);
+    maxBtn->setHoverColor(QColor(255, 255, 255, 30));
+    maxBtn->setBaseOpacity(1.0);
+    m_maxBtn = maxBtn;
+    connect(m_maxBtn, &QPushButton::clicked, this, [this]() {
         if (isMaximized()) showNormal();
         else showMaximized();
-        m_maxBtn->setIconSize(iconSize);
     });
 
-    m_closeBtn = new QPushButton(m_windowControls);
-    m_closeBtn->setObjectName("closeButton");
-    m_closeBtn->setIcon(QIcon(":/icons/close.svg"));
-    m_closeBtn->setIconSize(iconSize);
-    m_closeBtn->setStyleSheet(winBtnStyle);
-    m_closeBtn->setFixedSize(hitAreaSize);
+    auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
+    closeBtn->setObjectName("closeButton");
+    closeBtn->setPadding(8);
+    closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
+    closeBtn->setBaseOpacity(1.0);
+    m_closeBtn = closeBtn;
     connect(m_closeBtn, &QPushButton::clicked, this, &QWidget::close);
 
-    winCtrlLayout->addStretch();
     winCtrlLayout->addWidget(m_minBtn);
     winCtrlLayout->addWidget(m_maxBtn);
     winCtrlLayout->addWidget(m_closeBtn);
-    m_windowControls->raise();
+    m_windowControls->adjustSize();
 
     // ========== SPLITTER: sidebar | content ==========
     m_splitter = new QSplitter(Qt::Horizontal);
@@ -701,7 +763,7 @@ void MusicPlayer::setupUI()
     contentLayout->setContentsMargins(4, 10, 10, 10);
 
     QHBoxLayout *toolbarLayout = new QHBoxLayout();
-    toolbarLayout->setContentsMargins(0, 0, 130, 0); // Leave space for floating window controls
+    toolbarLayout->setContentsMargins(0, 0, 0, 0); 
 
     m_searchBox = new QLineEdit();
     m_searchBox->setPlaceholderText(QString::fromUtf8("\xF0\x9F\x94\x8D Search tracks..."));
@@ -710,17 +772,19 @@ void MusicPlayer::setupUI()
     m_trackCountLabel = new QLabel("0 tracks");
     m_trackCountLabel->setStyleSheet("color: #888; font-style: italic; font-size: 13px;");
 
-    m_settingsButton = new QPushButton(QString::fromUtf8("\xE2\x9A\x99"));
-    m_settingsButton->setFixedSize(32, 32);
-    m_settingsButton->setCursor(Qt::PointingHandCursor);
-    m_settingsButton->setStyleSheet(
-        "QPushButton { background: transparent; border: none; color: #888; font-size: 18px; border-radius: 4px; }"
-        "QPushButton:hover { background: #3a3a3a; color: white; }");
+    auto *settBtn = new FadingIconButton(QIcon(":/icons/options.svg"), QSize(32, 32), contentWidget);
+    settBtn->setPadding(6);
+    settBtn->setHoverColor(QColor(255, 255, 255, 30));
+    settBtn->setBaseOpacity(1.0);
+    m_settingsButton = settBtn;
 
     toolbarLayout->addWidget(m_searchBox);
     toolbarLayout->addStretch();
+    
     toolbarLayout->addWidget(m_trackCountLabel);
+    toolbarLayout->addSpacing(10);
     toolbarLayout->addWidget(m_settingsButton);
+    toolbarLayout->addSpacing(110); // Reserve space for floating window controls
 
     contentLayout->addLayout(toolbarLayout);
 
@@ -2556,10 +2620,17 @@ void MusicPlayer::dragEnterEvent(QDragEnterEvent *event) { if (event->mimeData()
 void MusicPlayer::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    if (m_windowControls) {
-        m_windowControls->move(width() - m_windowControls->width(), 8);
+
+    if (m_windowControls && m_settingsButton) {
+        // Find where the settings button is relative to the central widget
+        QPoint settingsPos = m_settingsButton->mapTo(centralWidget(), QPoint(0, 0));
+        int targetY = settingsPos.y() + (m_settingsButton->height() - m_windowControls->height()) / 2;
+        
+        // Position window controls at the same Y level, aligned to the right
+        m_windowControls->move(centralWidget()->width() - m_windowControls->width() - 10, targetY);
         m_windowControls->raise();
     }
+
     if (m_bottomGlow) {
         m_bottomGlow->move(0, centralWidget()->height() - m_bottomGlow->height());
     }
@@ -2568,9 +2639,6 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     }
     if (m_fullscreenPlayer && !m_isFsAnimating) {
         m_fullscreenPlayer->setGeometry(rect());
-    }
-    if (m_windowControls) {
-        m_windowControls->raise();
     }
 }
 

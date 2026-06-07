@@ -25,5 +25,6 @@
         <file>icons/minimize.svg</file>
         <file>icons/maximize.svg</file>
         <file>icons/close.svg</file>
+        <file>icons/options.svg</file>
     </qresource>
 </RCC>
