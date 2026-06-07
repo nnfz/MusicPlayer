@@ -612,11 +612,11 @@ void MusicPlayer::setupUI()
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
     winCtrlLayout->setSpacing(14); // Increased spacing between buttons
 
-    QSize hitAreaSize(28, 28); // Size 28x28
+    QSize hitAreaSize(30, 30); // Size 30x30
     
     auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
     minBtn->setObjectName("minimizeButton");
-    minBtn->setPadding(7);
+    minBtn->setPadding(9); // Increased padding
     minBtn->setHoverColor(QColor(255, 255, 255, 30));
     minBtn->setBaseOpacity(1.0);
     m_minBtn = minBtn;
@@ -624,7 +624,7 @@ void MusicPlayer::setupUI()
 
     auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
     maxBtn->setObjectName("maximizeButton");
-    maxBtn->setPadding(7);
+    maxBtn->setPadding(9); // Increased padding
     maxBtn->setHoverColor(QColor(255, 255, 255, 30));
     maxBtn->setBaseOpacity(1.0);
     m_maxBtn = maxBtn;
@@ -635,7 +635,7 @@ void MusicPlayer::setupUI()
 
     auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
     closeBtn->setObjectName("closeButton");
-    closeBtn->setPadding(7);
+    closeBtn->setPadding(9); // Increased padding
     closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
     closeBtn->setBaseOpacity(1.0);
     m_closeBtn = closeBtn;
