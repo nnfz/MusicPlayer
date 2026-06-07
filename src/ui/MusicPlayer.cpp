@@ -122,8 +122,8 @@ protected:
             p.setPen(Qt::NoPen);
             
             int side = qMin(width(), height());
-            QRect circleRect((width() - side) / 2, (height() - side) / 2, side, side);
-            p.drawEllipse(circleRect);
+            QRect squareRect((width() - side) / 2, (height() - side) / 2, side, side);
+            p.drawRoundedRect(squareRect, 6, 6);
         }
 
         p.setOpacity(m_baseOpacity + (1.0 - m_baseOpacity) * m_hoverFactor);
@@ -605,7 +605,7 @@ void MusicPlayer::setupUI()
     containerLayout->setContentsMargins(0, 0, 0, 0);
 
     // --- Floating Window Controls (outside m_mainUiContainer to avoid animation/blur) ---
-    m_windowControls = new QWidget(centralWidget);
+    m_windowControls = new QWidget(this);
     m_windowControls->setObjectName("windowControls");
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
@@ -784,7 +784,7 @@ void MusicPlayer::setupUI()
     toolbarLayout->addWidget(m_trackCountLabel);
     toolbarLayout->addSpacing(10);
     toolbarLayout->addWidget(m_settingsButton);
-    toolbarLayout->addSpacing(110); // Reserve space for floating window controls
+    toolbarLayout->addSpacing(140); // Increased spacing to floating window controls
 
     contentLayout->addLayout(toolbarLayout);
 
@@ -2485,6 +2485,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
                 m_fullscreenPlayer->setGeometry(rect());
                 m_fullscreenPlayer->show();
                 m_fullscreenPlayer->raise();
+                if (m_windowControls) m_windowControls->raise();
                 
                 mainSnapLabel->deleteLater();
                 fsSnapLabel->deleteLater();
@@ -2622,14 +2623,14 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
 
     if (m_windowControls && m_settingsButton) {
-        // Find where the settings button is relative to the central widget
-        QPoint settingsPos = m_settingsButton->mapTo(centralWidget(), QPoint(0, 0));
+        // Find where the settings button is relative to the window (this)
+        QPoint settingsPos = m_settingsButton->mapTo(this, QPoint(0, 0));
         
-        // Lower the buttons slightly more (targetY + 4)
+        // Lower the buttons slightly more (targetY + 10)
         int targetY = settingsPos.y() + (m_settingsButton->height() - m_windowControls->height()) / 2 + 10;
         
-        // Position window controls at the same Y level, aligned to the right
-        m_windowControls->move(centralWidget()->width() - m_windowControls->width() - 10, targetY);
+        // Position window controls aligned to the right edge of the window
+        m_windowControls->move(width() - m_windowControls->width() - 10, targetY);
         m_windowControls->raise();
     }
 
