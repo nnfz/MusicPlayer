@@ -122,8 +122,8 @@ protected:
             p.setPen(Qt::NoPen);
             
             int side = qMin(width(), height());
-            QRect squareRect((width() - side) / 2, (height() - side) / 2, side, side);
-            p.drawRoundedRect(squareRect, 2, 2);
+            QRect circleRect((width() - side) / 2, (height() - side) / 2, side, side);
+            p.drawEllipse(circleRect);
         }
 
         p.setOpacity(m_baseOpacity + (1.0 - m_baseOpacity) * m_hoverFactor);
@@ -610,13 +610,13 @@ void MusicPlayer::setupUI()
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
-    winCtrlLayout->setSpacing(2);
+    winCtrlLayout->setSpacing(14); // Increased spacing between buttons
 
-    QSize hitAreaSize(32, 32);
+    QSize hitAreaSize(28, 28); // Size 28x28
     
     auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
     minBtn->setObjectName("minimizeButton");
-    minBtn->setPadding(8);
+    minBtn->setPadding(7);
     minBtn->setHoverColor(QColor(255, 255, 255, 30));
     minBtn->setBaseOpacity(1.0);
     m_minBtn = minBtn;
@@ -624,7 +624,7 @@ void MusicPlayer::setupUI()
 
     auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
     maxBtn->setObjectName("maximizeButton");
-    maxBtn->setPadding(8);
+    maxBtn->setPadding(7);
     maxBtn->setHoverColor(QColor(255, 255, 255, 30));
     maxBtn->setBaseOpacity(1.0);
     m_maxBtn = maxBtn;
@@ -635,7 +635,7 @@ void MusicPlayer::setupUI()
 
     auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
     closeBtn->setObjectName("closeButton");
-    closeBtn->setPadding(8);
+    closeBtn->setPadding(7);
     closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
     closeBtn->setBaseOpacity(1.0);
     m_closeBtn = closeBtn;
@@ -2624,7 +2624,9 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     if (m_windowControls && m_settingsButton) {
         // Find where the settings button is relative to the central widget
         QPoint settingsPos = m_settingsButton->mapTo(centralWidget(), QPoint(0, 0));
-        int targetY = settingsPos.y() + (m_settingsButton->height() - m_windowControls->height()) / 2;
+        
+        // Lower the buttons slightly more (targetY + 4)
+        int targetY = settingsPos.y() + (m_settingsButton->height() - m_windowControls->height()) / 2 + 10;
         
         // Position window controls at the same Y level, aligned to the right
         m_windowControls->move(centralWidget()->width() - m_windowControls->width() - 10, targetY);
