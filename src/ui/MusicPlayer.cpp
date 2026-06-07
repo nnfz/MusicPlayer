@@ -610,13 +610,13 @@ void MusicPlayer::setupUI()
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
-    winCtrlLayout->setSpacing(10); // Reduced spacing between buttons
+    winCtrlLayout->setSpacing(8); // Tighter spacing
 
-    QSize hitAreaSize(32, 32); // Size 32x32
+    QSize hitAreaSize(26, 26); // Small utilities 26x26
     
     auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
     minBtn->setObjectName("minimizeButton");
-    minBtn->setPadding(9);
+    minBtn->setPadding(8); // Small clean icons
     minBtn->setHoverColor(QColor(255, 255, 255, 30));
     minBtn->setBaseOpacity(1.0);
     m_minBtn = minBtn;
@@ -624,7 +624,7 @@ void MusicPlayer::setupUI()
 
     auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
     maxBtn->setObjectName("maximizeButton");
-    maxBtn->setPadding(9);
+    maxBtn->setPadding(8); // Small clean icons
     maxBtn->setHoverColor(QColor(255, 255, 255, 30));
     maxBtn->setBaseOpacity(1.0);
     m_maxBtn = maxBtn;
@@ -635,7 +635,7 @@ void MusicPlayer::setupUI()
 
     auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
     closeBtn->setObjectName("closeButton");
-    closeBtn->setPadding(9);
+    closeBtn->setPadding(8); // Small clean icons
     closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
     closeBtn->setBaseOpacity(1.0);
     m_closeBtn = closeBtn;
@@ -773,7 +773,7 @@ void MusicPlayer::setupUI()
     m_trackCountLabel->setStyleSheet("color: #888; font-style: italic; font-size: 13px;");
 
     auto *settBtn = new FadingIconButton(QIcon(":/icons/options.svg"), QSize(32, 32), contentWidget);
-    settBtn->setPadding(9);
+    settBtn->setPadding(6); // Primary tool icon size
     settBtn->setHoverColor(QColor(255, 255, 255, 30));
     settBtn->setBaseOpacity(1.0);
     m_settingsButton = settBtn;
@@ -784,7 +784,7 @@ void MusicPlayer::setupUI()
     toolbarLayout->addWidget(m_trackCountLabel);
     toolbarLayout->addSpacing(10);
     toolbarLayout->addWidget(m_settingsButton);
-    toolbarLayout->addSpacing(120); // Spacing to reserved for floating controls
+    toolbarLayout->addSpacing(110); // Adjust reserved space for 28px buttons
 
     contentLayout->addLayout(toolbarLayout);
 
