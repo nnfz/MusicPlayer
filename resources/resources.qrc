@@ -18,5 +18,12 @@
         <file>icons/volmed.svg</file>
         <file>icons/volmax.svg</file>
         <file>icons/mute.svg</file>
+        <file>imgs/all.png</file>
+        <file>imgs/like.png</file>
+        <file>imgs/track.png</file>
+        <file>icons/revertmaximize.svg</file>
+        <file>icons/minimize.svg</file>
+        <file>icons/maximize.svg</file>
+        <file>icons/close.svg</file>
     </qresource>
 </RCC>

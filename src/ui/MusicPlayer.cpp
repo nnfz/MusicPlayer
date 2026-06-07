@@ -4,6 +4,40 @@
 #include <QGraphicsOpacityEffect>
 #include <QGraphicsScale>
 #include <QPainterPath>
+#include <QWindow>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <windowsx.h>
+#ifndef _MARGINS_DEFINED
+#define _MARGINS_DEFINED
+typedef struct _MARGINS {
+    int cxLeftWidth;
+    int cxRightWidth;
+    int cyTopHeight;
+    int cyBottomHeight;
+} MARGINS, *PMARGINS;
+#endif
+
+typedef HRESULT(WINAPI *DwmExtendFrameIntoClientAreaPtr)(HWND, const MARGINS*);
+typedef HRESULT(WINAPI *DwmSetWindowAttributePtr)(HWND, DWORD, LPCVOID, DWORD);
+
+void applyWindows11RoundedCornersAndShadow(HWND hwnd) {
+    HMODULE dwm = LoadLibraryA("dwmapi.dll");
+    if (dwm) {
+        auto extendFrame = reinterpret_cast<DwmExtendFrameIntoClientAreaPtr>(reinterpret_cast<void*>(GetProcAddress(dwm, "DwmExtendFrameIntoClientArea")));
+        if (extendFrame) {
+            MARGINS margins = {1, 1, 1, 1};
+            extendFrame(hwnd, &margins);
+        }
+        auto setAttr = reinterpret_cast<DwmSetWindowAttributePtr>(reinterpret_cast<void*>(GetProcAddress(dwm, "DwmSetWindowAttribute")));
+        if (setAttr) {
+            int roundPref = 2; // DWMWCP_ROUND
+            setAttr(hwnd, 33, &roundPref, sizeof(roundPref)); // DWMWA_WINDOW_CORNER_PREFERENCE
+        }
+        FreeLibrary(dwm);
+    }
+}
+#endif
 #include "CueParser.h"
 #include "TrackItem.h"
 #include <QDragEnterEvent>
@@ -193,6 +227,10 @@ MusicPlayer::MusicPlayer(QWidget *parent)
     , m_userSeeking(false)
     , m_seekPending(false)
 {
+    setAttribute(Qt::WA_TranslucentBackground);
+#ifdef Q_OS_WIN
+    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()));
+#endif
     qDebug() << "[init] MusicPlayer constructor BEGIN";
     qInfo() << "[seek-ui] build marker" << kSeekDiagBuildMarker;
 
@@ -494,10 +532,63 @@ void MusicPlayer::setupUI()
     m_mainUiContainer = new QWidget(centralWidget);
     m_mainUiContainer->setObjectName("mainUiContainer");
     m_mainUiContainer->setAttribute(Qt::WA_StyledBackground);
-    m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; }");
+    m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: 1px solid #333; border-radius: 10px; }");
     QVBoxLayout *containerLayout = new QVBoxLayout(m_mainUiContainer);
     containerLayout->setSpacing(0);
     containerLayout->setContentsMargins(0, 0, 0, 0);
+
+    // --- Custom Title Bar ---
+    QWidget *titleBar = new QWidget();
+    titleBar->setObjectName("titleBarWidget");
+    titleBar->setFixedHeight(26);
+    titleBar->setStyleSheet("QWidget#titleBarWidget { background: transparent; }");
+    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
+    titleLayout->setContentsMargins(12, 0, 0, 0);
+    titleLayout->setSpacing(0);
+
+    QLabel *appTitle = new QLabel("Music Player");
+    appTitle->setStyleSheet("color: #888; font-weight: bold; font-size: 11px;");
+    titleLayout->addWidget(appTitle);
+    titleLayout->addStretch();
+
+    QString btnStyle = "QPushButton { background: transparent; border: none; padding: 4px; } QPushButton:hover { background: #333; }";
+    QString closeBtnStyle = "QPushButton { background: transparent; border: none; padding: 4px; } QPushButton:hover { background: #e81123; }";
+
+    QPushButton *minBtn = new QPushButton();
+    minBtn->setObjectName("minimizeButton");
+    minBtn->setIcon(QIcon(":/icons/minimize.svg"));
+    minBtn->setStyleSheet(btnStyle);
+    minBtn->setFixedSize(26, 20);
+    connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
+
+    QPushButton *maxBtn = new QPushButton();
+    maxBtn->setObjectName("maximizeButton");
+    maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+    maxBtn->setStyleSheet(btnStyle);
+    maxBtn->setFixedSize(26, 20);
+    connect(maxBtn, &QPushButton::clicked, this, [this, maxBtn]() {
+        if (isMaximized()) {
+            showNormal();
+            maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+        } else {
+            showMaximized();
+            maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
+        }
+    });
+
+    QPushButton *closeBtn = new QPushButton();
+    closeBtn->setObjectName("closeButton");
+    closeBtn->setIcon(QIcon(":/icons/close.svg"));
+    closeBtn->setStyleSheet(closeBtnStyle);
+    closeBtn->setFixedSize(26, 20);
+    connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+
+    titleLayout->addWidget(minBtn);
+    titleLayout->addWidget(maxBtn);
+    titleLayout->addWidget(closeBtn);
+
+    containerLayout->addWidget(titleBar);
+    titleBar->installEventFilter(this);
 
     // ========== SPLITTER: sidebar | content ==========
     m_splitter = new QSplitter(Qt::Horizontal);
@@ -2157,6 +2248,25 @@ void MusicPlayer::exportM3UPlaylist()
 
 bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched->objectName() == "titleBarWidget") {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                if (windowHandle()) {
+                    windowHandle()->startSystemMove();
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::MouseButtonDblClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                if (isMaximized()) showNormal();
+                else showMaximized();
+                return true;
+            }
+        }
+    }
+
     if (event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Space) {
@@ -2461,11 +2571,100 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
         m_fullscreenPlayer->setGeometry(rect());
 }
 
+void MusicPlayer::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        QPushButton *maxBtn = findChild<QPushButton*>("maximizeButton");
+        if (maxBtn) {
+            if (isMaximized()) {
+                maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
+            } else {
+                maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+            }
+        }
+    }
+}
+
 void MusicPlayer::moveEvent(QMoveEvent *event)
 {
     QMainWindow::moveEvent(event);
     // child widget — no action needed, moves with parent automatically
 }
+
+void MusicPlayer::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+#ifdef Q_OS_WIN
+    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()));
+#endif
+}
+
+bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    MSG *msg = static_cast<MSG *>(message);
+    if (msg->message == WM_NCCALCSIZE && msg->wParam == TRUE) {
+        // Remove standard window frame but keep shadow and animations
+        NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
+        
+        // When maximized, Windows expands the window beyond the screen to hide borders.
+        // We must shrink the client area so it doesn't get clipped.
+        if (IsZoomed(msg->hwnd)) {
+            int frameX = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            int frameY = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            params->rgrc[0].left += frameX;
+            params->rgrc[0].top += frameY;
+            params->rgrc[0].right -= frameX;
+            params->rgrc[0].bottom -= frameY;
+            
+            // Adjust top to make sure taskbar is respected
+            APPBARDATA autohide;
+            memset(&autohide, 0, sizeof(APPBARDATA));
+            autohide.cbSize = sizeof(APPBARDATA);
+            if ((SHAppBarMessage(ABM_GETSTATE, &autohide) & ABS_AUTOHIDE) == 0) {
+                // If there's a taskbar on top, adjust
+            }
+        }
+        *result = 0;
+        return true;
+    } else if (msg->message == WM_NCHITTEST) {
+        // Handle resizing from edges since we removed the standard frame
+        const LONG border_width = 8;
+        HWND hwnd = msg->hwnd;
+        POINT pt;
+        pt.x = GET_X_LPARAM(msg->lParam);
+        pt.y = GET_Y_LPARAM(msg->lParam);
+        ScreenToClient(hwnd, &pt);
+
+        RECT rcClient;
+        GetClientRect(hwnd, &rcClient);
+
+        *result = 0;
+        bool hit = false;
+        if (pt.y < border_width) {
+            if (pt.x < border_width) *result = HTTOPLEFT;
+            else if (pt.x >= rcClient.right - border_width) *result = HTTOPRIGHT;
+            else *result = HTTOP;
+            hit = true;
+        } else if (pt.y >= rcClient.bottom - border_width) {
+            if (pt.x < border_width) *result = HTBOTTOMLEFT;
+            else if (pt.x >= rcClient.right - border_width) *result = HTBOTTOMRIGHT;
+            else *result = HTBOTTOM;
+            hit = true;
+        } else if (pt.x < border_width) {
+            *result = HTLEFT;
+            hit = true;
+        } else if (pt.x >= rcClient.right - border_width) {
+            *result = HTRIGHT;
+            hit = true;
+        }
+        if (hit) return true;
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
 void MusicPlayer::dropEvent(QDropEvent *event) {
     if (event->mimeData()->hasUrls()) {
         QStringList playlistFiles;
