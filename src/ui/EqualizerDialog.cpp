@@ -42,13 +42,13 @@ EqualizerDialog::EqualizerDialog(Equalizer *eq, QWidget *parent)
     m_presetCombo = new QComboBox();
     m_presetCombo->addItems({"Flat", "Rock", "Pop", "Jazz", "Classical", "Bass Boost", "Vocal", "Electronic"});
     m_presetCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; min-width: 100px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; min-width: 100px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: none; }");
 
     QPushButton *resetBtn = new QPushButton("Reset");
     resetBtn->setStyleSheet(
-        "QPushButton { background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px; padding: 4px 12px; font-size: 12px; }"
+        "QPushButton { background: #333; color: #ccc; border: none; border-radius: 0px; padding: 4px 12px; font-size: 12px; }"
         "QPushButton:hover { background: #444; color: white; }");
     resetBtn->setCursor(Qt::PointingHandCursor);
 

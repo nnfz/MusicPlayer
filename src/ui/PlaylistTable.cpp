@@ -38,7 +38,7 @@ PlaylistTable::PlaylistTable(QWidget *parent)
     horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
 
     setStyleSheet(
-        "QTableWidget { border: 2px solid #555; border-radius: 5px; background-color: #1a1a1a; color: white; gridline-color: #282828; }"
+        "QTableWidget { border: none; border-radius: 0px; background-color: #1a1a1a; color: white; gridline-color: #282828; }"
         "QTableWidget::item { padding: 5px; border: none; color: white; }"
         "QHeaderView::section { background: transparent; color: white; padding: 8px; border: none; font-weight: bold; }"
         "QHeaderView::section:hover { background-color: #2d2d2d; }");

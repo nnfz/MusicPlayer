@@ -599,7 +599,7 @@ void MusicPlayer::setupUI()
     m_mainUiContainer = new QWidget(centralWidget);
     m_mainUiContainer->setObjectName("mainUiContainer");
     m_mainUiContainer->setAttribute(Qt::WA_StyledBackground);
-    m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: 1px solid #333; border-radius: 10px; }");
+    m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: none; border-radius: 0px; }");
     QVBoxLayout *containerLayout = new QVBoxLayout(m_mainUiContainer);
     containerLayout->setSpacing(0);
     containerLayout->setContentsMargins(0, 0, 0, 0);
@@ -654,7 +654,7 @@ void MusicPlayer::setupUI()
     // --- LEFT: Playlist sidebar ---
     QWidget *sidebarWidget = new QWidget();
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: #1a1a1a; border: 2px solid #555; border-radius: 5px; }");
+        "QWidget#sidebarPanel { background-color: #1a1a1a; border: none; border-radius: 0px; }");
     sidebarWidget->setObjectName("sidebarPanel");
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebarWidget);
     sidebarLayout->setContentsMargins(8, 10, 8, 10);
@@ -732,7 +732,7 @@ void MusicPlayer::setupUI()
         const bool isLikedPlaylist = (playlistId == getLikedPlaylistId());
 
         QMenu menu;
-        menu.setStyleSheet("QMenu { background: #2b2b2b; color: white; border: 1px solid #555; } QMenu::item:selected { background: #0078d7; }");
+        menu.setStyleSheet("QMenu { background: #2b2b2b; color: white; border: none; } QMenu::item:selected { background: #0078d7; }");
         QAction *renameAct = menu.addAction("Rename");
         QAction *autoSourceAct = menu.addAction("Auto Source...");
         QAction *exportAct = menu.addAction("Export as M3U");
@@ -767,7 +767,7 @@ void MusicPlayer::setupUI()
 
     m_searchBox = new QLineEdit();
     m_searchBox->setPlaceholderText(QString::fromUtf8("\xF0\x9F\x94\x8D Search tracks..."));
-    m_searchBox->setStyleSheet("QLineEdit { background-color: #3d3d3d; color: white; border: 2px solid #555; border-radius: 5px; padding: 5px 10px; min-width: 200px; } QLineEdit:focus { border: 2px solid #0078d7; }");
+    m_searchBox->setStyleSheet("QLineEdit { background-color: #3d3d3d; color: white; border: none; border-radius: 0px; padding: 5px 10px; min-width: 200px; } QLineEdit:focus { border: none; }");
 
     m_trackCountLabel = new QLabel("0 tracks");
     m_trackCountLabel->setStyleSheet("color: #888; font-style: italic; font-size: 13px;");
@@ -1006,7 +1006,7 @@ void MusicPlayer::setupUI()
     // Adjust styles to be slightly transparent so the glow is visible from behind
     centralWidget->setStyleSheet("background-color: #121212;");
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: rgba(26, 26, 26, 200); border: 2px solid #333; border-radius: 5px; }");
+        "QWidget#sidebarPanel { background-color: rgba(26, 26, 26, 200); border: none; border-radius: 0px; }");
     bottomBar->setStyleSheet("background-color: transparent;");
     
     setCentralWidget(centralWidget);
@@ -2661,7 +2661,7 @@ void MusicPlayer::changeEvent(QEvent *event)
                 m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: none; border-radius: 0px; }");
             } else {
                 m_maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
-                m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: 1px solid #333; border-radius: 10px; }");
+                m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: none; border-radius: 0px; }");
             }
             m_maxBtn->setIconSize(QSize(12, 12));
         }

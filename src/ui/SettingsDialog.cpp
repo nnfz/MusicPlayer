@@ -93,7 +93,7 @@ void SettingsDialog::buildAppearancePage()
     m_rowHeightSpin->setRange(30, 150);
     m_rowHeightSpin->setSuffix(" px");
     m_rowHeightSpin->setStyleSheet(
-        "QSpinBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 13px; min-width: 80px; }"
+        "QSpinBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 13px; min-width: 80px; }"
         "QSpinBox::up-button, QSpinBox::down-button { background: #444; border: none; width: 16px; }"
         "QSpinBox::up-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid #ccc; }"
         "QSpinBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #ccc; }");
@@ -111,7 +111,7 @@ void SettingsDialog::buildAppearancePage()
     QLabel *cacheLabel = new QLabel("Clear Metadata Cache");
     cacheLabel->setStyleSheet("font-size: 13px; color: #ccc;");
     QPushButton *btnCache = new QPushButton("Clear Cache");
-    btnCache->setStyleSheet("QPushButton { background: #333; border: 1px solid #555; color: #ccc; font-size: 13px; padding: 6px 12px; border-radius: 4px; }"
+    btnCache->setStyleSheet("QPushButton { background: #333; border: none; color: #ccc; font-size: 13px; padding: 6px 12px; border-radius: 0px; }"
                             "QPushButton:hover { background: #444; color: white; }");
     cacheRow->addWidget(cacheLabel);
     cacheRow->addStretch();
@@ -154,9 +154,9 @@ void SettingsDialog::buildAudioPage()
     m_decoderCombo = new QComboBox();
     m_decoderCombo->setMinimumWidth(260);
     m_decoderCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #1a1a1a; color: white; selection-background-color: #0078d7; border: none; }");
     m_decoderCombo->addItem("FFmpeg Decoder (custom)", GaplessAudioEngine::decoderFfmpegId());
     decoderRow->addWidget(decoderTitle);
     decoderRow->addStretch();
@@ -169,9 +169,9 @@ void SettingsDialog::buildAudioPage()
     m_backendCombo = new QComboBox();
     m_backendCombo->setMinimumWidth(260);
     m_backendCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: none; }");
     m_backendCombo->addItem("Custom WASAPI Shared", GaplessAudioEngine::backendWasapiSharedId());
     m_backendCombo->addItem("Custom WASAPI Exclusive", GaplessAudioEngine::backendWasapiExclusiveId());
 
@@ -186,9 +186,9 @@ void SettingsDialog::buildAudioPage()
     m_outputDeviceCombo = new QComboBox();
     m_outputDeviceCombo->setMinimumWidth(260);
     m_outputDeviceCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: none; }");
     deviceRow->addWidget(deviceTitle);
     deviceRow->addStretch();
     deviceRow->addWidget(m_outputDeviceCombo);
@@ -370,10 +370,10 @@ void SettingsDialog::buildPlaybackPage()
     QHBoxLayout *ratePresetsRow = new QHBoxLayout();
     ratePresetsRow->setSpacing(6);
     const QString presetBtnStyle =
-        "QPushButton { background: #2a2a2a; color: #ccc; border: 1px solid #444; border-radius: 4px;"
+        "QPushButton { background: #2a2a2a; color: #ccc; border: none; border-radius: 0px;"
         " font-size: 12px; padding: 3px 0; }"
-        "QPushButton:hover { background: #333; border-color: #666; color: white; }"
-        "QPushButton:pressed { background: #1db954; border-color: #1db954; color: white; }";
+        "QPushButton:hover { background: #333; color: white; }"
+        "QPushButton:pressed { background: #1db954; color: white; }";
     for (auto [label, value] : std::initializer_list<std::pair<const char*, int>>{
              {"0.85x", 85}, {"1x", 100}, {"1.25x", 125}}) {
         QPushButton *btn = new QPushButton(label);
@@ -517,9 +517,9 @@ void SettingsDialog::buildPlaybackPage()
     m_shuffleModeCombo = new QComboBox();
     m_shuffleModeCombo->setMinimumWidth(280);
     m_shuffleModeCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: none; }");
     m_shuffleModeCombo->addItem("Random (next/previous)", 0);
     m_shuffleModeCombo->addItem("Shuffle (history-aware)", 1);
     shuffleModeRow->addWidget(shuffleModeTitle);
@@ -688,7 +688,7 @@ void SettingsDialog::buildEqualizerPage()
     layout->setSpacing(8);
 
     QString btnStyle =
-        "QPushButton { background: #333; color: #ccc; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+        "QPushButton { background: #333; color: #ccc; border: none; border-radius: 0px; padding: 4px 10px; font-size: 11px; }"
         "QPushButton:hover { background: #444; color: white; }";
 
     // Top row: enable + auto-level
@@ -722,9 +722,9 @@ void SettingsDialog::buildEqualizerPage()
     m_presetCombo = new QComboBox();
     m_presetCombo->setMinimumWidth(140);
     m_presetCombo->setStyleSheet(
-        "QComboBox { background: #333; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+        "QComboBox { background: #333; color: white; border: none; border-radius: 0px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: 1px solid #555; }");
+        "QComboBox QAbstractItemView { background: #2b2b2b; color: white; selection-background-color: #0078d7; border: none; }");
 
     m_savePresetBtn = new QPushButton("Save");
     m_savePresetBtn->setStyleSheet(btnStyle);
