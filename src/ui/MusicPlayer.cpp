@@ -654,7 +654,7 @@ void MusicPlayer::setupUI()
     // --- LEFT: Playlist sidebar ---
     QWidget *sidebarWidget = new QWidget();
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: #1a1a1a; border: none; border-radius: 0px; }");
+        "QWidget#sidebarPanel { border: none; border-radius: 0px; margin: 10px; }");
     sidebarWidget->setObjectName("sidebarPanel");
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebarWidget);
     sidebarLayout->setContentsMargins(8, 10, 8, 10);
@@ -1006,7 +1006,7 @@ void MusicPlayer::setupUI()
     // Adjust styles to be slightly transparent so the glow is visible from behind
     centralWidget->setStyleSheet("background-color: #121212;");
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: rgba(26, 26, 26, 200); border: none; border-radius: 0px; }");
+        "QWidget#sidebarPanel { background-color: #262626; border: none; border-radius: 0px; margin: 10px; }");
     bottomBar->setStyleSheet("background-color: transparent;");
     
     setCentralWidget(centralWidget);
