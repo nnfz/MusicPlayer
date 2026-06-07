@@ -21,7 +21,7 @@ typedef struct _MARGINS {
 typedef HRESULT(WINAPI *DwmExtendFrameIntoClientAreaPtr)(HWND, const MARGINS*);
 typedef HRESULT(WINAPI *DwmSetWindowAttributePtr)(HWND, DWORD, LPCVOID, DWORD);
 
-void applyWindows11RoundedCornersAndShadow(HWND hwnd) {
+void applyWindows11RoundedCornersAndShadow(HWND hwnd, bool round) {
     HMODULE dwm = LoadLibraryA("dwmapi.dll");
     if (dwm) {
         auto extendFrame = reinterpret_cast<DwmExtendFrameIntoClientAreaPtr>(reinterpret_cast<void*>(GetProcAddress(dwm, "DwmExtendFrameIntoClientArea")));
@@ -31,7 +31,7 @@ void applyWindows11RoundedCornersAndShadow(HWND hwnd) {
         }
         auto setAttr = reinterpret_cast<DwmSetWindowAttributePtr>(reinterpret_cast<void*>(GetProcAddress(dwm, "DwmSetWindowAttribute")));
         if (setAttr) {
-            int roundPref = 2; // DWMWCP_ROUND
+            int roundPref = round ? 2 : 1; // 2 = DWMWCP_ROUND, 1 = DWMWCP_DONOTROUND (square)
             setAttr(hwnd, 33, &roundPref, sizeof(roundPref)); // DWMWA_WINDOW_CORNER_PREFERENCE
         }
         FreeLibrary(dwm);
@@ -229,7 +229,7 @@ MusicPlayer::MusicPlayer(QWidget *parent)
 {
     setAttribute(Qt::WA_TranslucentBackground);
 #ifdef Q_OS_WIN
-    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()));
+    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()), true);
 #endif
     qDebug() << "[init] MusicPlayer constructor BEGIN";
     qInfo() << "[seek-ui] build marker" << kSeekDiagBuildMarker;
@@ -540,33 +540,36 @@ void MusicPlayer::setupUI()
     // --- Custom Title Bar ---
     QWidget *titleBar = new QWidget();
     titleBar->setObjectName("titleBarWidget");
-    titleBar->setFixedHeight(26);
+    titleBar->setFixedHeight(32);
     titleBar->setStyleSheet("QWidget#titleBarWidget { background: transparent; }");
     QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
-    titleLayout->setContentsMargins(12, 0, 0, 0);
-    titleLayout->setSpacing(0);
+    titleLayout->setContentsMargins(16, 0, 12, 0);
+    titleLayout->setSpacing(15);
 
     QLabel *appTitle = new QLabel("Music Player");
-    appTitle->setStyleSheet("color: #888; font-weight: bold; font-size: 11px;");
+    appTitle->setStyleSheet("color: #555; font-weight: bold; font-size: 11px;");
     titleLayout->addWidget(appTitle);
     titleLayout->addStretch();
 
-    QString btnStyle = "QPushButton { background: transparent; border: none; padding: 4px; } QPushButton:hover { background: #333; }";
-    QString closeBtnStyle = "QPushButton { background: transparent; border: none; padding: 4px; } QPushButton:hover { background: #e81123; }";
+    QString btnStyle = "QPushButton { background: transparent; border: none; opacity: 0.5; }";
+    QSize hitAreaSize(30, 30);
+    QSize iconSize(12, 12);
 
     QPushButton *minBtn = new QPushButton();
     minBtn->setObjectName("minimizeButton");
     minBtn->setIcon(QIcon(":/icons/minimize.svg"));
+    minBtn->setIconSize(iconSize);
     minBtn->setStyleSheet(btnStyle);
-    minBtn->setFixedSize(26, 20);
+    minBtn->setFixedSize(hitAreaSize);
     connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
 
     QPushButton *maxBtn = new QPushButton();
     maxBtn->setObjectName("maximizeButton");
     maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+    maxBtn->setIconSize(iconSize);
     maxBtn->setStyleSheet(btnStyle);
-    maxBtn->setFixedSize(26, 20);
-    connect(maxBtn, &QPushButton::clicked, this, [this, maxBtn]() {
+    maxBtn->setFixedSize(hitAreaSize);
+    connect(maxBtn, &QPushButton::clicked, this, [this, maxBtn, iconSize]() {
         if (isMaximized()) {
             showNormal();
             maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
@@ -574,13 +577,15 @@ void MusicPlayer::setupUI()
             showMaximized();
             maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
         }
+        maxBtn->setIconSize(iconSize);
     });
 
     QPushButton *closeBtn = new QPushButton();
     closeBtn->setObjectName("closeButton");
     closeBtn->setIcon(QIcon(":/icons/close.svg"));
-    closeBtn->setStyleSheet(closeBtnStyle);
-    closeBtn->setFixedSize(26, 20);
+    closeBtn->setIconSize(iconSize);
+    closeBtn->setStyleSheet(btnStyle);
+    closeBtn->setFixedSize(hitAreaSize);
     connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
 
     titleLayout->addWidget(minBtn);
@@ -2576,13 +2581,19 @@ void MusicPlayer::changeEvent(QEvent *event)
     QMainWindow::changeEvent(event);
     if (event->type() == QEvent::WindowStateChange) {
         QPushButton *maxBtn = findChild<QPushButton*>("maximizeButton");
+        const bool maximized = isMaximized();
         if (maxBtn) {
-            if (isMaximized()) {
+            if (maximized) {
                 maxBtn->setIcon(QIcon(":/icons/revertmaximize.svg"));
+                m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: none; border-radius: 0px; }");
             } else {
                 maxBtn->setIcon(QIcon(":/icons/maximize.svg"));
+                m_mainUiContainer->setStyleSheet("QWidget#mainUiContainer { background: #121212; border: 1px solid #333; border-radius: 10px; }");
             }
         }
+#ifdef Q_OS_WIN
+        applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()), !maximized);
+#endif
     }
 }
 
@@ -2596,7 +2607,7 @@ void MusicPlayer::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
 #ifdef Q_OS_WIN
-    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()));
+    applyWindows11RoundedCornersAndShadow(reinterpret_cast<HWND>(winId()), !isMaximized());
 #endif
 }
 
