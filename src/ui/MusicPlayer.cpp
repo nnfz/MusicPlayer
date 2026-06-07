@@ -610,7 +610,7 @@ void MusicPlayer::setupUI()
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
-    winCtrlLayout->setSpacing(14); // Increased spacing between buttons
+    winCtrlLayout->setSpacing(10); // Reduced spacing between buttons
 
     QSize hitAreaSize(32, 32); // Size 32x32
     
