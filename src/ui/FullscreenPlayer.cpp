@@ -545,13 +545,13 @@ FullscreenPlayer::FullscreenPlayer(QWidget *parent) : QWidget(parent)
     m_contentSnapshotLabel->setStyleSheet("background:transparent;");
 
     m_titleBar = new QWidget(m_rootLayout);
-    m_titleBar->setFixedHeight(60);
+    m_titleBar->setFixedHeight(55);
     QHBoxLayout *tbl = new QHBoxLayout(m_titleBar);
     tbl->setContentsMargins(12, 0, 24, 0);
 
     auto makeTitleBtn = [&](const QString &iconPath, const QString &fallbackTxt) {
         auto *b = new AnimatedScaleButton(m_titleBar);
-        b->setFixedSize(48, 48);
+        b->setFixedSize(36, 36);
         b->setStyleSheet("QPushButton{background:transparent;border:none;color:white;font-size:26px;}");
         b->setCursor(Qt::PointingHandCursor);
         if (!iconPath.isEmpty()) {
