@@ -140,8 +140,7 @@ private:
     QVariantAnimation *m_anim;
 };
 
-// Qt metadata preload can destabilize startup on some Windows/FFmpeg hook stacks.
-// Keep disabled by default; TrackItem fallback metadata remains active.
+
 constexpr bool kEnableQtMetadataPreload = false;
 const QString kLikedPlaylistName = QStringLiteral("liked");
 const QString kAllPlaylistVirtualId = QStringLiteral("__all__");
@@ -186,13 +185,11 @@ protected:
 
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        
-        // Very large, soft radial glow from bottom-left
+
         qreal radius = std::sqrt(width()*width() + height()*height());
         QRadialGradient g(0, height(), radius);
         
         QColor c = m_currentColor;
-        // Moderate vibrancy for background use
         c.setAlpha(80); 
         g.setColorAt(0, c);
         g.setColorAt(0.2, c);
@@ -210,7 +207,6 @@ private:
 
 QColor extractDominantColor(const QPixmap &pixmap) {
     if (pixmap.isNull()) return Qt::transparent;
-    // Scale to 1x1 to get the average/dominant color efficiently
     QImage img = pixmap.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).toImage();
     return img.pixelColor(0, 0);
 }
@@ -330,7 +326,6 @@ MusicPlayer::MusicPlayer(QWidget *parent)
     if (kEnableQtMetadataPreload)
         m_metadataLoader = new QMediaPlayer(this);
 
-    // Start background metadata loading thread
     m_metadataThread = new MetadataLoaderThread();
     m_metadataThread->start();
     connect(m_metadataThread, &MetadataLoaderThread::metadataLoaded,
@@ -422,9 +417,8 @@ MusicPlayer::MusicPlayer(QWidget *parent)
             return r.adjusted(dx, dy, -dx, -dy);
         };
 
-        // 1. Prepare FS Snapshot
         QPixmap fsPix = m_fullscreenPlayer->grab();
-        m_fullscreenPlayer->hide(); // Hide live player
+        m_fullscreenPlayer->hide();
 
         QLabel *fsSnapLabel = new QLabel(centralWidget());
         fsSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -437,7 +431,6 @@ MusicPlayer::MusicPlayer(QWidget *parent)
         fsOpEffect->setOpacity(1.0);
         fsSnapLabel->setGraphicsEffect(fsOpEffect);
 
-        // 2. Prepare Main UI Snapshot
         m_mainUiContainer->setGeometry(rect());
         QPixmap mainPix = m_mainUiContainer->grab();
         
@@ -445,19 +438,18 @@ MusicPlayer::MusicPlayer(QWidget *parent)
         mainSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
         mainSnapLabel->setPixmap(mainPix);
         mainSnapLabel->setScaledContents(true);
-        mainSnapLabel->setGeometry(scaleRect(rect(), 0.85f)); // Start shrunk
+        mainSnapLabel->setGeometry(scaleRect(rect(), 0.85f));
         mainSnapLabel->show();
 
         QGraphicsBlurEffect *blurEffect = new QGraphicsBlurEffect(mainSnapLabel);
-        blurEffect->setBlurRadius(30.0); // Start fully blurred
+        blurEffect->setBlurRadius(30.0);
         blurEffect->setBlurHints(QGraphicsBlurEffect::AnimationHint);
         mainSnapLabel->setGraphicsEffect(blurEffect);
 
-        mainSnapLabel->lower(); // keep behind FS
-        if (m_bottomGlow) m_bottomGlow->lower(); // keep glow behind main UI snapshot
-        fsSnapLabel->raise(); // keep in front
+        mainSnapLabel->lower();
+        if (m_bottomGlow) m_bottomGlow->lower();
+        fsSnapLabel->raise();
 
-        // 3. Animations
         QParallelAnimationGroup *group = new QParallelAnimationGroup(this);
 
         QPropertyAnimation *fsGeomAnim = new QPropertyAnimation(fsSnapLabel, "geometry");
@@ -575,7 +567,6 @@ MusicPlayer::~MusicPlayer()
     m_globalMetadataPreloadPaths.clear();
     m_globalMetadataPreloadIndex = -1;
 
-    // Stop background metadata thread
     if (m_metadataThread) {
         m_metadataThread->stop();
         m_metadataThread->quit();
@@ -595,7 +586,6 @@ void MusicPlayer::setupUI()
     mainLayout->setSpacing(0);
     mainLayout->setContentsMargins(0, 0, 0, 0);
 
-    // --- Container for main UI to allow scaling and blurring ---
     m_mainUiContainer = new QWidget(centralWidget);
     m_mainUiContainer->setObjectName("mainUiContainer");
     m_mainUiContainer->setAttribute(Qt::WA_StyledBackground);
@@ -604,19 +594,18 @@ void MusicPlayer::setupUI()
     containerLayout->setSpacing(0);
     containerLayout->setContentsMargins(0, 0, 0, 0);
 
-    // --- Floating Window Controls (outside m_mainUiContainer to avoid animation/blur) ---
     m_windowControls = new QWidget(this);
     m_windowControls->setObjectName("windowControls");
     m_windowControls->setAttribute(Qt::WA_TranslucentBackground);
     QHBoxLayout *winCtrlLayout = new QHBoxLayout(m_windowControls);
     winCtrlLayout->setContentsMargins(0, 0, 0, 0);
-    winCtrlLayout->setSpacing(8); // Tighter spacing
+    winCtrlLayout->setSpacing(8);
 
-    QSize hitAreaSize(30, 30); // Slightly larger 28x28
+    QSize hitAreaSize(30, 30); 
     
     auto *minBtn = new FadingIconButton(QIcon(":/icons/minimize.svg"), hitAreaSize, m_windowControls);
     minBtn->setObjectName("minimizeButton");
-    minBtn->setPadding(8); // Keep same icon proportions
+    minBtn->setPadding(8);
     minBtn->setHoverColor(QColor(255, 255, 255, 30));
     minBtn->setBaseOpacity(1.0);
     m_minBtn = minBtn;
@@ -624,7 +613,7 @@ void MusicPlayer::setupUI()
 
     auto *maxBtn = new FadingIconButton(QIcon(":/icons/maximize.svg"), hitAreaSize, m_windowControls);
     maxBtn->setObjectName("maximizeButton");
-    maxBtn->setPadding(8); // Keep same icon proportions
+    maxBtn->setPadding(8);
     maxBtn->setHoverColor(QColor(255, 255, 255, 30));
     maxBtn->setBaseOpacity(1.0);
     m_maxBtn = maxBtn;
@@ -635,8 +624,8 @@ void MusicPlayer::setupUI()
 
     auto *closeBtn = new FadingIconButton(QIcon(":/icons/close.svg"), hitAreaSize, m_windowControls);
     closeBtn->setObjectName("closeButton");
-    closeBtn->setPadding(8); // Keep same icon proportions
-    closeBtn->setHoverColor(QColor(232, 17, 35)); // System Red
+    closeBtn->setPadding(8);
+    closeBtn->setHoverColor(QColor(232, 17, 35));
     closeBtn->setBaseOpacity(1.0);
     m_closeBtn = closeBtn;
     connect(m_closeBtn, &QPushButton::clicked, this, &QWidget::close);
@@ -654,22 +643,48 @@ void MusicPlayer::setupUI()
     // --- LEFT: Playlist sidebar ---
     QWidget *sidebarWidget = new QWidget();
     sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { border: none; border-radius: 0px; margin: 10px; }");
+        "QWidget#sidebarPanel { background-color: rgba(38, 38, 38, 200); border: none; border-radius: 8px; }");
     sidebarWidget->setObjectName("sidebarPanel");
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebarWidget);
-    sidebarLayout->setContentsMargins(8, 10, 8, 10);
-    sidebarLayout->setSpacing(6);
+    sidebarLayout->setContentsMargins(6, 8, 6, 8);
+    sidebarLayout->setSpacing(4);
+
+    QHBoxLayout *headerLayout = new QHBoxLayout();
+    headerLayout->setContentsMargins(6, 4, 2, 4);
 
     QLabel *sidebarTitle = new QLabel("Playlists");
-    sidebarTitle->setStyleSheet("background: transparent; color: #888; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;");
-    sidebarLayout->addWidget(sidebarTitle);
+    sidebarTitle->setStyleSheet("background: transparent; color: #ccc; font-size: 12px; font-weight: bold; letter-spacing: 1px;");
+    headerLayout->addWidget(sidebarTitle);
+    headerLayout->addStretch();
+
+    AnimatedScaleButton *btnNewPl = new AnimatedScaleButton();
+    btnNewPl->setToolTip("New Playlist");
+    btnNewPl->setIcon(QIcon(":/icons/plus.svg"));
+    btnNewPl->setIconSize(QSize(10, 10));
+    btnNewPl->setFixedSize(18, 18);
+    btnNewPl->setStyleSheet("background: transparent; border: none; color: #ccc;");
+    btnNewPl->setCursor(Qt::PointingHandCursor);
+
+    AnimatedScaleButton *btnImportM3U = new AnimatedScaleButton();
+    btnImportM3U->setToolTip("Import M3U");
+    btnImportM3U->setIcon(QIcon(":/icons/import.svg"));
+    btnImportM3U->setIconSize(QSize(14, 14));
+    btnImportM3U->setFixedSize(22, 22);
+    btnImportM3U->setStyleSheet("background: transparent; border: none; color: #ccc;");
+    btnImportM3U->setCursor(Qt::PointingHandCursor);
+
+    headerLayout->addWidget(btnNewPl);
+    headerLayout->addWidget(btnImportM3U);
+    sidebarLayout->addLayout(headerLayout);
 
     m_playlistList = new NoXButtonListWidget();
     m_playlistList->setStyleSheet(
-        "QListWidget { background: #1a1a1a; border: none; color: white; font-size: 13px; outline: none; }"
-        "QListWidget::item { padding: 8px 8px 8px 12px; border-radius: 4px; background: transparent; border-left: 3px solid transparent; }"
-        "QListWidget::item:selected { background: #3d3d3d; color: #1db954; font-weight: bold; border-left: 3px solid #1db954; }"
+        "QListWidget { background: transparent; border: none; color: white; font-size: 13px; outline: none; }"
+        "QListWidget::item { padding: 6px 6px 6px 10px; border-radius: 4px; background: transparent; }"
+        "QListWidget::item:selected { background: #3d3d3d; color: #1db954; font-weight: bold; }"
         "QListWidget::item:hover:!selected { background: #3a3a3a; }");
+    m_playlistList->setTextElideMode(Qt::ElideRight);
+    m_playlistList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_playlistList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_playlistList->setDragDropMode(QAbstractItemView::InternalMove);
     m_playlistList->setDefaultDropAction(Qt::MoveAction);
@@ -697,28 +712,8 @@ void MusicPlayer::setupUI()
     connect(m_playlistList->model(), &QAbstractItemModel::rowsMoved,
             this, &MusicPlayer::onPlaylistListRowsMoved);
 
-    QHBoxLayout *sidebarBtnRow = new QHBoxLayout();
-    sidebarBtnRow->setSpacing(4);
-    QString sidebarBtnStyle = "QPushButton { background: #333; border: none; color: #ccc; font-size: 16px; padding: 4px 10px; border-radius: 4px; }"
-                              "QPushButton:hover { background: #444; color: white; }";
-
-    QPushButton *btnNewPl = new QPushButton("+");
-    btnNewPl->setToolTip("New Playlist");
-    btnNewPl->setStyleSheet(sidebarBtnStyle);
-    btnNewPl->setCursor(Qt::PointingHandCursor);
-
-    QPushButton *btnImportM3U = new QPushButton(QString::fromUtf8("\xF0\x9F\x93\xA5"));
-    btnImportM3U->setToolTip("Import M3U");
-    btnImportM3U->setStyleSheet(sidebarBtnStyle);
-    btnImportM3U->setCursor(Qt::PointingHandCursor);
-
-    sidebarBtnRow->addWidget(btnNewPl);
-    sidebarBtnRow->addWidget(btnImportM3U);
-    sidebarBtnRow->addStretch();
-    sidebarLayout->addLayout(sidebarBtnRow);
-
-    sidebarWidget->setMinimumWidth(140);
-    sidebarWidget->setMaximumWidth(300);
+    sidebarWidget->setMinimumWidth(120);
+    sidebarWidget->setMaximumWidth(250);
     m_splitter->addWidget(sidebarWidget);
 
     connect(btnNewPl, &QPushButton::clicked, this, &MusicPlayer::createNewPlaylist);
@@ -767,13 +762,13 @@ void MusicPlayer::setupUI()
 
     m_searchBox = new QLineEdit();
     m_searchBox->setPlaceholderText(QString::fromUtf8("\xF0\x9F\x94\x8D Search tracks..."));
-    m_searchBox->setStyleSheet("QLineEdit { background-color: #3d3d3d; color: white; border: none; border-radius: 0px; padding: 5px 10px; min-width: 200px; } QLineEdit:focus { border: none; }");
+    m_searchBox->setStyleSheet("QLineEdit { background-color: #3d3d3d; color: white; border: none; border-radius: 6px; padding: 5px 10px; min-width: 200px; } QLineEdit:focus { border: none; }");
 
     m_trackCountLabel = new QLabel("0 tracks");
     m_trackCountLabel->setStyleSheet("color: #888; font-style: italic; font-size: 13px;");
 
     auto *settBtn = new FadingIconButton(QIcon(":/icons/options.svg"), QSize(30, 30), contentWidget);
-    settBtn->setPadding(6); // Primary tool icon size
+    settBtn->setPadding(6);
     settBtn->setHoverColor(QColor(255, 255, 255, 30));
     settBtn->setBaseOpacity(1.0);
     m_settingsButton = settBtn;
@@ -784,7 +779,7 @@ void MusicPlayer::setupUI()
     toolbarLayout->addWidget(m_trackCountLabel);
     toolbarLayout->addSpacing(10);
     toolbarLayout->addWidget(m_settingsButton);
-    toolbarLayout->addSpacing(120); // Adjust reserved space for 28px buttons
+    toolbarLayout->addSpacing(120); 
 
     contentLayout->addLayout(toolbarLayout);
 
@@ -809,7 +804,7 @@ void MusicPlayer::setupUI()
     m_splitter->addWidget(contentWidget);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
-    m_splitter->setSizes({180, 1020});
+    m_splitter->setSizes({140, 900});
 
     containerLayout->addWidget(m_splitter, 1);
 
@@ -1000,13 +995,11 @@ void MusicPlayer::setupUI()
     mainLayout->addWidget(m_mainUiContainer, 1);
 
     m_bottomGlow = new CornerGlowWidget(centralWidget);
-    m_bottomGlow->resize(800, 600); // Larger glow area
-    m_bottomGlow->lower(); // Move behind all other widgets
+    m_bottomGlow->resize(800, 600);
+    m_bottomGlow->lower();
 
     // Adjust styles to be slightly transparent so the glow is visible from behind
     centralWidget->setStyleSheet("background-color: #121212;");
-    sidebarWidget->setStyleSheet(
-        "QWidget#sidebarPanel { background-color: #262626; border: none; border-radius: 0px; margin: 10px; }");
     bottomBar->setStyleSheet("background-color: transparent;");
     
     setCentralWidget(centralWidget);
@@ -1065,16 +1058,10 @@ void MusicPlayer::setupConnections()
                 << "userSeeking=" << m_userSeeking
                 << "seekPending(before)=" << m_seekPending;
 
-        // Set m_seekPending BEFORE seek to prevent stale position updates
         m_seekPending = true;
-        // Pre-anchor the fullscreen lyrics interpolator at the seek target so
-        // it doesn't drift further from the stale pre-seek anchor while the
-        // engine catches up. Without this, fast successive seeks could leave
-        // lyrics frozen on an old line until the engine settled.
         if (m_fullscreenPlayer)
             m_fullscreenPlayer->updatePosition(seekTargetMs);
         seek(seekTargetMs);
-        // Slider will update naturally as decoder catches up with audio
         QTimer::singleShot(300, this, [this, releaseEpoch]() {
             if (releaseEpoch != m_seekUiEpoch) {
                 qInfo() << "[seek-ui] skip stale seek flag reset"
@@ -1397,7 +1384,6 @@ QString MusicPlayer::getLikedPlaylistId() const
     if (!id.isEmpty() && m_playlistManager->playlist(id))
         return id;
 
-    // Fallback if not found in settings
     for (const auto &pl : m_playlistManager->playlists()) {
         if (pl.name.trimmed().compare(kLikedPlaylistName, Qt::CaseInsensitive) == 0) {
             settings.setValue("LikedPlaylistId", pl.id);
@@ -1463,9 +1449,6 @@ void MusicPlayer::updateLikeButtonState()
     const QString filePath = m_tracks[m_currentIndex]->filePath();
     const bool liked = isTrackLiked(filePath);
 
-    // When liked, background becomes white and icon becomes dark (or uses a filled icon if available).
-    // Assuming heart.svg uses currentColor, we can tint it via CSS if the custom widget supports it,
-    // or just rely on the background color change. We'll set the background to solid white when liked.
     m_likeButton->setIcon(QIcon(":/icons/heart.svg"));
     if (liked) {
         m_likeButton->setStyleSheet("AnimatedScaleButton { margin: 2px; background: white; border-radius: 12px; color: #121212; }"); // color sets icon tint if svg is configured for it
@@ -1564,11 +1547,9 @@ void MusicPlayer::refreshLikeIndicatorsForPath(const QString &filePath)
 
 void MusicPlayer::onBackgroundMetadataLoaded(const QString &filePath)
 {
-    // Safety check - if tracks list changed (playlist switched), ignore
     if (m_tracks.isEmpty())
         return;
 
-    // Update UI for tracks matching this file path
     const QString needle = normalizePathForCompare(filePath);
     const int playingTrackIndex = resolvePlayingTrackIndex();
 
@@ -1740,8 +1721,7 @@ void MusicPlayer::onPlaylistSelected(int row)
                 for (const CueTrack &ct : cueCache[cuePath]) {
                     if (ct.trackNumber != trackNum)
                         continue;
-                    // Pass a null QImage to defer cover loading to the background thread.
-                    // The first track will cache the cover, subsequent tracks will use the cache.
+
                     m_tracks.append(TrackItem::fromCueTrack(ct, QImage()));
                     break;
                 }
@@ -1800,10 +1780,8 @@ void MusicPlayer::onPlaylistSelected(int row)
         m_playlistTable->resetSmoothScroll();
     });
 
-    // Prioritize visible rows immediately after table is rendered.
     QTimer::singleShot(50, this, [this]() { onPlaylistScroll(0); });
 
-    // Start metadata warmup immediately on playlist enter (no scroll required).
     if (m_metadataThread && !m_tracks.isEmpty()) {
         const int warmupCount = qMin(kPlaylistWarmupCount, m_tracks.count());
         QStringList warmup;
@@ -2120,7 +2098,6 @@ QStringList MusicPlayer::collectTracksFromAutoSource(const QString &dirPath) con
         }
     }
 
-    // Filter out audio files that were referenced by CUE files
     QStringList finalTracks;
     for (const QString &path : tracks) {
         if (isCueSavedPath(path)) {
@@ -2170,11 +2147,6 @@ void MusicPlayer::renameSelectedPlaylist()
 
     item->setFlags(item->flags() | Qt::ItemIsEditable);
     m_playlistList->editItem(item);
-    // Note: actual rename persistence is handled by the QListWidget::itemChanged
-    // signal connected in the constructor, so double-click, F2, and context-menu
-    // rename all flow through the same path. Edit triggers stay set to
-    // DoubleClicked | EditKeyPressed (set once at widget creation) so double-click
-    // continues to work after any rename.
 }
 
 void MusicPlayer::deleteSelectedPlaylist()
@@ -2362,7 +2334,7 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             return true;
         }
     }
-    // Volume icon click → toggle mute
+
     if (watched == m_volumeLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
         if (me->button() == Qt::LeftButton) {
@@ -2378,7 +2350,6 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    // Cover art click → open fullscreen player
     if (watched == m_bottomCoverLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *me = static_cast<QMouseEvent *>(event);
         if (me->button() == Qt::LeftButton) {
@@ -2408,7 +2379,6 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             if (m_isFsAnimating) return true;
             m_isFsAnimating = true;
 
-            // 1. Prepare Main UI Snapshot
             QPixmap mainPix = m_mainUiContainer->grab();
             QLabel *mainSnapLabel = new QLabel(centralWidget());
             mainSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -2423,12 +2393,11 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             blurEffect->setBlurHints(QGraphicsBlurEffect::AnimationHint);
             mainSnapLabel->setGraphicsEffect(blurEffect);
 
-            // 2. Prepare FS Snapshot
             m_fullscreenPlayer->setGeometry(rect());
-            m_fullscreenPlayer->setOpenAlpha(1.0); // Full opaque for snapshot
+            m_fullscreenPlayer->setOpenAlpha(1.0);
             m_fullscreenPlayer->openFor(cover, title, artist, album, dur, pos, playing, vol);
             QPixmap fsPix = m_fullscreenPlayer->grab();
-            m_fullscreenPlayer->hide(); // Keep real player hidden until end
+            m_fullscreenPlayer->hide();
 
             QLabel *fsSnapLabel = new QLabel(centralWidget());
             fsSnapLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -2441,7 +2410,6 @@ bool MusicPlayer::eventFilter(QObject *watched, QEvent *event)
             fsOpEffect->setOpacity(0.0);
             fsSnapLabel->setGraphicsEffect(fsOpEffect);
 
-            // 3. Animations
             auto scaleRect = [](const QRect &r, float scale) {
                 int nw = qRound(r.width() * scale);
                 int nh = qRound(r.height() * scale);
@@ -2623,17 +2591,13 @@ void MusicPlayer::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
 
     if (m_windowControls && m_settingsButton) {
-        // Use a timer to ensure the layout has finished before calculating the position
         QTimer::singleShot(0, this, [this]() {
             if (!m_windowControls || !m_settingsButton) return;
-            
-            // Map the settings button position to the main window's coordinates
+
             QPoint posInWindow = m_settingsButton->mapTo(this, QPoint(0, 0));
-            
-            // Align centers vertically
+
             int targetY = posInWindow.y() + (m_settingsButton->height() - m_windowControls->height()) / 2;
-            
-            // Move to the right edge with a 10px margin
+
             m_windowControls->move(width() - m_windowControls->width() - 10, targetY);
             m_windowControls->raise();
         });
@@ -2690,11 +2654,8 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
 #ifdef Q_OS_WIN
     MSG *msg = static_cast<MSG *>(message);
     if (msg->message == WM_NCCALCSIZE && msg->wParam == TRUE) {
-        // Remove standard window frame but keep shadow and animations
         NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
-        
-        // When maximized, Windows expands the window beyond the screen to hide borders.
-        // We must shrink the client area so it doesn't get clipped.
+
         if (IsZoomed(msg->hwnd)) {
             int frameX = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
             int frameY = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
@@ -2703,7 +2664,6 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
             params->rgrc[0].right -= frameX;
             params->rgrc[0].bottom -= frameY;
             
-            // Adjust top to make sure taskbar is respected
             APPBARDATA autohide;
             memset(&autohide, 0, sizeof(APPBARDATA));
             autohide.cbSize = sizeof(APPBARDATA);
@@ -2724,7 +2684,6 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
         RECT rcClient;
         GetClientRect(hwnd, &rcClient);
 
-        // 1. Handle Resize Borders
         if (pt.y < border_width) {
             if (pt.x < border_width) *result = HTTOPLEFT;
             else if (pt.x >= rcClient.right - border_width) *result = HTTOPRIGHT;
@@ -2743,12 +2702,10 @@ bool MusicPlayer::nativeEvent(const QByteArray &eventType, void *message, qintpt
             return true;
         }
 
-        // 2. Handle Title/Dragging Area (top part of the window)
         if (pt.y < 40) {
             QWidget *child = childAt(pt.x, pt.y);
             bool isInteractive = false;
             if (child) {
-                // List of widgets that SHOULD handle their own mouse events
                 if (qobject_cast<QPushButton*>(child) || 
                     qobject_cast<QLineEdit*>(child) || 
                     qobject_cast<QAbstractSlider*>(child)) {
@@ -2895,8 +2852,6 @@ void MusicPlayer::preloadTrackMetadata()
              << "of" << m_tracks.count()
              << m_tracks[m_metadataLoadIndex]->filePath();
 
-    // Use single-shot timer to defer loading to next event loop tick
-    // This prevents blocking the main thread during playlist load
     QTimer::singleShot(1, this, [this]() {
         if (m_metadataLoadIndex >= 0 && m_metadataLoadIndex < m_tracks.count()) {
             m_metadataTimeout->start();
@@ -2989,7 +2944,6 @@ void MusicPlayer::forceLoadMetadataForTracks(const QList<TrackItem*> &tracks, co
             if (loaded >= total)
                 break;
 
-            // Safety timeout: 15 seconds without any progress
             if (timer.elapsed() > 15000) {
                 qWarning() << "forceLoadMetadataForTracks: timeout reached, breaking loop";
                 break;
@@ -3176,7 +3130,7 @@ void MusicPlayer::stopDeferredMetadataLoading()
 
 void MusicPlayer::processDeferredMetadataBatch()
 {
-    // Background loading - just add tracks to thread queue
+
     if (!m_metadataThread)
         return;
 
@@ -3237,12 +3191,10 @@ void MusicPlayer::onPlaylistScroll(int value)
     if (rowCount == 0)
         return;
 
-    // Use rowAt for visible range; fall back to row height estimate if not yet rendered
     int firstVisible = m_playlistTable->rowAt(0);
     int lastVisible = m_playlistTable->rowAt(m_playlistTable->viewport()->height() - 1);
 
     if (firstVisible < 0) {
-        // Table not yet rendered — estimate from row height
         const int rowH = qMax(1, m_rowHeight);
         const int viewH = qMax(1, m_playlistTable->viewport()->height());
         firstVisible = 0;
@@ -3254,7 +3206,6 @@ void MusicPlayer::onPlaylistScroll(int value)
     QStringList priority;
     QStringList nearby;
 
-    // Visible rows — highest priority
     for (int row = firstVisible; row <= lastVisible && row < rowCount; ++row) {
         int trackIdx = getTrackIndexFromVisualRow(row);
         if (trackIdx >= 0 && trackIdx < m_tracks.count()) {
@@ -3264,7 +3215,6 @@ void MusicPlayer::onPlaylistScroll(int value)
         }
     }
 
-    // Rows just above and below visible area
     for (int offset = 1; offset <= 20; ++offset) {
         for (int row : {firstVisible - offset, lastVisible + offset}) {
             if (row < 0 || row >= rowCount)
@@ -3432,7 +3382,6 @@ void MusicPlayer::addCueFile(const QString &cuePath)
         if (!QFileInfo::exists(ct.audioFilePath))
             continue;
 
-        // Pass a null QImage to defer cover loading to the background thread.
         m_tracks.append(TrackItem::fromCueTrack(ct, QImage()));
         ++added;
     }
@@ -3746,7 +3695,6 @@ QList<int> MusicPlayer::buildOrderedTrackIndices() const
             orderedIndices.append(trackIndex);
     }
 
-    // Fallback: if filtering hides all rows, preserve logical playlist traversal.
     if (orderedIndices.isEmpty()) {
         orderedIndices.reserve(m_tracks.count());
         for (int i = 0; i < m_tracks.count(); ++i)
@@ -4112,8 +4060,6 @@ void MusicPlayer::previous()
         if (m_activeIsCue)
             currentPos -= m_activeCueStartMs;
 
-        // If current track is playing (or paused) and we're more than 3 seconds in, restart it.
-        // Otherwise, go to the previous track in the playlist.
         if (activePlaylistTrackIsPlaying && currentPos > 3000) {
             m_resumeOnPlayPath.clear();
             m_resumeOnPlayPositionMs = -1;
@@ -4167,26 +4113,19 @@ void MusicPlayer::updatePosition(qint64 position) {
         const qint64 rel = qMax<qint64>(0, position - m_activeCueStartMs);
         if (!m_userSeeking && !m_seekPending)
             m_positionSlider->setValue(static_cast<int>(rel));
-        // Don't update time label during seek - position values are unreliable
         if (!m_seekPending)
             m_currentTimeLabel->setText(formatTime(rel));
-        // Always forward to fullscreen player — lyrics need the updates to
-        // re-anchor the interpolator. Without this, a main-window seek would
-        // leave the fullscreen interpolator running forward from a stale
-        // anchor for 300ms, then desync until updatePosition resumes, which
-        // sometimes left the lyrics view permanently stuck on the wrong line
-        // after multiple consecutive seeks.
+
         if (m_fullscreenPlayer)
             m_fullscreenPlayer->updatePosition(static_cast<int>(rel));
         return;
     }
 
     if (!m_userSeeking && !m_seekPending) m_positionSlider->setValue(static_cast<int>(position));
-    // Don't update time label during seek - position values are unreliable until decoder catches up
+
     if (!m_seekPending)
         m_currentTimeLabel->setText(formatTime(position));
 
-    // See comment above — fullscreen lyrics interpolator must always re-anchor.
     if (m_fullscreenPlayer)
         m_fullscreenPlayer->updatePosition(static_cast<int>(position));
 
@@ -4238,7 +4177,6 @@ void MusicPlayer::updateDuration(qint64 duration) {
         return;
     }
 
-    // Always update duration - don't block on small decreases
     m_positionSlider->setRange(0, static_cast<int>(duration));
     m_totalTimeLabel->setText(formatTime(duration));
     
@@ -4290,7 +4228,6 @@ void MusicPlayer::playCurrentItem()
     if (track->metadata().isCueTrack)
         currentKey = makeCueSavedPath(track->metadata().cueFilePath, track->metadata().trackNumber);
 
-    // If the track we are about to play doesn't match the resume path, clear resume info
     if (!m_resumeOnPlayPath.isEmpty() && normalizePathForCompare(currentKey) != normalizePathForCompare(m_resumeOnPlayPath)) {
         m_resumeOnPlayPath.clear();
         m_resumeOnPlayPositionMs = -1;
@@ -4542,9 +4479,9 @@ void MusicPlayer::updatePlaylistHighlight()
 
         QFont font;
         if (isCurrent) {
-            font.setVariableAxis("wght", 900.0f); // Тот самый 900
+            font.setVariableAxis("wght", 900.0f);
         } else {
-            font.setVariableAxis("wght", 400.0f); // Regular
+            font.setVariableAxis("wght", 400.0f);
         }
 
         for (int col = 0; col < m_playlistTable->columnCount(); ++col) {
@@ -5018,7 +4955,7 @@ void MusicPlayer::updateTrackRow(int trackIndex)
 
     if (QTableWidgetItem *durItem = m_playlistTable->item(visualRow, COL_DURATION)) {
         durItem->setText(md.duration > 0 ? formatTime(md.duration) : "");
-        // Removed durItem->setTextAlignment(Qt::AlignCenter) to keep default left alignment
+        // durItem->setTextAlignment(Qt::AlignCenter)
     }
     if (QTableWidgetItem *bitrateItem = m_playlistTable->item(visualRow, COL_BITRATE)) {
         bitrateItem->setText(md.bitrate > 0 ? QString::number(md.bitrate / 1000) : "");
